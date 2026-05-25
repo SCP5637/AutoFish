@@ -5,8 +5,9 @@ setlocal
 :: Double-click this file to start autonomous CC development loop.
 :: Must have Git for Windows (bash) and Claude Code installed.
 
-set "PROJECT_DIR=E:\WorkSpace\github\SokobanLike"
-set "SCRIPT_DIR=%PROJECT_DIR%\.asdf"
+:: Auto-detect: script is in .asdf/, project is parent
+set "SCRIPT_DIR=%~dp0"
+for %%A in ("%SCRIPT_DIR%..") do set "PROJECT_DIR=%%~fA"
 
 cd /d "%PROJECT_DIR%"
 

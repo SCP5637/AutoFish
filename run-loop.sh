@@ -6,7 +6,14 @@
 
 set -eo pipefail
 
-PROJECT_DIR="E:/WorkSpace/github/SokobanLike"
+# Auto-detect project directory (script is in .asdf/, project is parent)
+# Override by setting AUTOFISH_PROJECT_DIR environment variable
+if [ -n "$AUTOFISH_PROJECT_DIR" ]; then
+    PROJECT_DIR="$AUTOFISH_PROJECT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
 PROMPT_FILE="$PROJECT_DIR/.asdf/auto-prompt.md"
 LOG_FILE="$PROJECT_DIR/.asdf/auto-log.txt"
 DONE_FILE="$PROJECT_DIR/.asdf/task-done.txt"
