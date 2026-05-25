@@ -1,0 +1,405 @@
+# AutoFish — CC 全自动开发脚本系统
+
+> 命名由来：扔下鱼饵（prompt），鱼自己上钩（CC 自动滚动开发）。你睡觉，它干活。
+> 版本：v1.0 | 2026-05-25
+
+---
+
+## 目录
+
+1. [这是什么](#1-这是什么)
+2. [核心原理](#2-核心原理)
+3. [文件结构](#3-文件结构)
+4. [使用方式](#4-使用方式)
+5. [运行流程图](#5-运行流程图)
+6. [停止条件](#6-停止条件)
+7. [安全机制](#7-安全机制)
+8. [结果验收](#8-结果验收)
+9. [故障排查](#9-故障排查)
+10. [已知限制](#10-已知限制)
+11. [后续开发方向](#11-后续开发方向)
+
+---
+
+## 1. 这是什么
+
+AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系统。
+
+核心思路：一个 `.bat` 双击启动 → 外层 `while` 循环 → 每轮启动一个新的 CC 非交互会话 → CC 读取 `project.md` 的任务清单逐项完成 → 会话结束 → 自动开始下一轮 → 直到所有任务完成或需要人工介入时停止。
+
+**实战验证**：2026-05-25 凌晨，AutoFish 在 SokobanLike 项目中连续运行 8 轮（约 1.5 小时），自动完成了 **C0.2 到 C2.8 共 19 个子阶段**的全部代码实现，包括：
+- 四方向移动 + 撞墙检测 + 动画
+- 全部 5×4 箱子物理规则表
+- 圆柱箱双格系统
+- 球箱持续滚动 + 磁力连锁递归
+- 10000 步撤销/重做
+- raygui 编辑器（画笔/填充/选择/Playtest 切换）
+- BFS 可解性验证器
+- CMake 构建系统 + 编译通过
+
+---
+
+## 2. 核心原理
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      run-auto.bat                         │
+│  1. 探测 bash.exe 位置（6 个常见路径）                      │
+│  2. 注入 Git usr/bin + mingw64 gcc 到 PATH                │
+│  3. git commit checkpoint（自动回滚点）                     │
+│  4. 启动 bash run-loop.sh                                │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │                   run-loop.sh                       │  │
+│  │  while (未达停止条件) {                              │  │
+│  │    1. 读取 auto-prompt.md 作为本轮任务指令            │  │
+│  │    2. claude -p "$prompt"                            │  │
+│  │       --permission-mode auto                         │  │
+│  │       --max-turns 50                                 │  │
+│  │       --max-budget-usd 5.00                          │  │
+│  │    3. 等待 CC 完成（或 turns/budget 耗尽）            │  │
+│  │    4. 检查停止条件                                    │  │
+│  │    5. 等待 5 秒 → 下一轮                              │  │
+│  │  }                                                   │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │                  auto-prompt.md                     │  │
+│  │  "你是潮水退去之后的开发者..."                         │  │
+│  │  "阅读 project.md Part C 任务清单"                    │  │
+│  │  "找到第一个 - [ ] 未完成任务 → 完成它"               │  │
+│  │  "遇到设计决策/架构变更 → 记录到 task-blocked.txt"    │  │
+│  │  "完成所有任务 → 写入 ALL_COMPLETE"                   │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+```
+
+**关键设计**：
+- 每轮是**全新 CC 会话**（`claude -p` 非交互模式，完成后退出）。上下文干净，不积累膨胀。
+- 每轮 CC 都重新读取 `auto-prompt.md` 和 `project.md`，从第一个未完成的 `- [ ]` 开始。
+- 进度通过 `project.md` 的 `[x]` 标记和 `task-done.txt` 持久化，跨轮保持。
+- CC 不清楚"之前做过什么"——它只看当前 project.md 的状态来判断下一步该做什么。
+
+---
+
+## 3. 文件结构
+
+```
+项目根目录/
+└── .asdf/
+    ├── run-auto.bat          ← 双击启动（纯 ASCII，CMD 兼容）
+    ├── run-loop.sh           ← bash 循环逻辑
+    ├── auto-prompt.md        ← 每轮传给 CC 的任务指令
+    ├── project.md            ← 项目主文档（含任务清单 - [ ] 勾选项）
+    ├── auto-log.txt          ← 自动生成：完整运行日志
+    ├── task-done.txt         ← 自动生成：已完成任务列表
+    ├── task-blocked.txt      ← 自动生成：阻塞项列表
+    └── auto-round.txt        ← 自动生成：当前轮数
+```
+
+**三个文件的关系**：
+
+| 文件 | 谁读 | 用途 |
+|------|------|------|
+| `run-auto.bat` | 你（双击） | 启动器。找 bash → 注入 PATH → git checkpoint → 调 run-loop.sh |
+| `run-loop.sh` | `.bat` 调用 | 循环引擎。读 prompt → 调 CC → 检查停止条件 → 下一轮 |
+| `auto-prompt.md` | CC 每轮读取 | 任务定义。告诉 CC 它是谁、要做什么、什么不能做 |
+
+### 3.5 依赖：cc-safe-setup 安全钩子（安装指南）
+
+AutoFish 让 CC 在无人值守状态下连续运行数小时。**没有钩子 = 裸奔。** 社区记录了大量事故：`rm -rf /` 从根目录删除用户数据、`git push --force` 凌晨推未测试代码到 main、语法错误级联污染 30+ 文件。
+
+#### 安装命令
+
+```bash
+npx cc-safe-setup
+```
+
+安装过程中提示 `Install all 8 safety hooks? [Y/n]`，输入 `Y`。
+
+#### 依赖
+
+钩子脚本依赖两个工具，安装前确保可用：
+
+| 工具 | 用途 | 安装方式 |
+|------|------|----------|
+| **jq** | JSON 解析（钩子需解析 settings.json） | Windows: 从 [jqlang/releases](https://github.com/jqlang/jq/releases) 下载 `jq-windows-amd64.exe` → 放到 Git usr/bin/ 下 |
+| **gcc** | Post-Edit 语法检查（编辑 .c 文件后自动 `gcc -fsyntax-only`） | Windows: `winget install BrechtSanders.WinLibs.POSIX.MSVCRT` |
+
+#### 八个钩子详解
+
+| # | 钩子名 | 触发时机 | 作用 | 不装的后果 |
+|---|--------|----------|------|-----------|
+| 1 | **Destructive Command Blocker** | PreToolUse(Bash) | 拦截 `rm -rf` / `git reset --hard` / `git checkout --force` / `git push --force` / `DROP TABLE` 等 | CC 凌晨可能删除整个项目目录 |
+| 2 | **Branch Push Protector** | PreToolUse(Bash) | 拦截 `git push` 到 main/master，拦截未经 CI 的 force push | 凌晨未测试代码直接推到 main |
+| 3 | **Post-Edit Syntax Validator** | PostToolUse(Edit\|Write) | 每次编辑 .c/.h 文件后自动跑 `gcc -fsyntax-only`，发现语法错误立即阻止 | 一个语法错误污染后续所有编辑，级联到 30+ 文件 |
+| 4 | **Context Window Monitor** | PostToolUse(*) | 追踪工具调用次数作为上下文代理，在阈值 40%/25%/20%/15% 时自动注入 `/compact` | 超过 150 次工具调用后静默丢失全部上下文状态 |
+| 5 | **Bash Comment Stripper** | PreToolUse(Bash) | 剥离 bash 命令中的注释，修复注释破坏权限白名单匹配的 bug | 带注释的命令被权限系统误判，导致合法命令被拒 |
+| 6 | **cd+git Auto-Approver** | PreToolUse(Bash) | 自动批准 `cd` + `git status/log/diff` 等只读组合操作，减少权限弹窗 | 每轮 CC 被权限弹窗卡住，自动化无法持续 |
+| 7 | **Secret Leak Prevention** | PreToolUse(Bash) | 检测 `git add` 的文件列表中是否包含 `.env`/`credentials`/`secret` 等敏感文件名 | CC 凌晨 `git add .` 把 API key 提交到公开仓库 |
+| 8 | **API Error Session Alert** | Stop | CC 因 API 限流/429/账单欠费等原因退出时，在日志中写入告警而非静默死亡 | 自动化会话静默终止，你早上发现什么都没做 |
+
+#### 验证钩子生效
+
+```bash
+# 安装后重启 CC，运行验证：
+npx cc-safe-setup --doctor
+```
+
+#### 钩子配置存储位置
+
+```
+C:\Users\<用户名>\.claude\
+├── hooks/
+│   ├── destructive-guard.sh
+│   ├── branch-guard.sh
+│   ├── syntax-check.sh
+│   ├── context-monitor.sh
+│   ├── comment-strip.sh
+│   ├── cd-git-allow.sh
+│   ├── secret-guard.sh
+│   └── api-error-alert.sh
+└── settings.json          ← hooks 注册配置在此文件中
+```
+
+> **警告**：钩子安装后必须**重启 Claude Code** 才能生效。如果 CC 正在运行中，关闭重新打开。
+
+---
+
+## 4. 使用方式
+
+### 前置条件
+
+1. **Windows** + Git for Windows（提供 bash）
+2. **Claude Code** 已安装并在 PATH 中
+3. **项目** 有 `.asdf/project.md`，其中 Part C 有 `- [ ]` 格式的任务清单
+4. **cc-safe-setup 8 个安全钩子已安装**（**必须**，详见 §3.5）
+
+### 启动
+
+```
+双击 .asdf/run-auto.bat
+```
+
+### 运行中
+
+- 终端窗口会显示每轮进度
+- `auto-log.txt` 记录完整日志
+- 按 `Ctrl+C` 可随时停止（git checkpoint 已自动创建，可回滚）
+
+### 睡前操作
+
+```bash
+# 1. 确认 project.md 任务清单是最新的
+# 2. 确认 auto-prompt.md 中的项目路径正确
+# 3. 双击 run-auto.bat
+# 4. 去睡觉
+```
+
+### 早上验收
+
+```bash
+# 1. 查看完成的任务
+cat .asdf/task-done.txt
+
+# 2. 查看阻塞项
+cat .asdf/task-blocked.txt
+
+# 3. 查看 git 变更摘要
+git diff --stat HEAD~N   # N = 完成的轮数
+
+# 4. 编译验证
+cmake -B build && cmake --build build
+
+# 5. 满意 → git add -A && git commit -m "review: autonomous session approved"
+#    不满意 → git reset --hard <checkpoint commit>
+```
+
+---
+
+## 5. 运行流程图
+
+```
+双击 run-auto.bat
+  │
+  ├─ [1] 探测 bash.exe
+  │     └─ 失败 → 报错退出
+  │
+  ├─ [2] 注入 PATH
+  │     ├─ Git usr/bin (date, cat, rm, mktemp, sleep)
+  │     └─ mingw64/bin (gcc)
+  │
+  ├─ [3] Git checkpoint
+  │     └─ git add -A && git commit -m "checkpoint: pre-autonomous <ts>"
+  │
+  ├─ [4] 启动 bash run-loop.sh
+  │     │
+  │     ├─ 安全检查 (.git 存在? claude 可用? prompt 文件存在?)
+  │     │   └─ 失败 → 退出
+  │     │
+  │     └─ while (轮数 < 200):
+  │           │
+  │           ├─ 读取 auto-prompt.md
+  │           ├─ claude -p "$prompt" --permission-mode auto ...
+  │           │   └─ CC 读取 project.md
+  │           │   └─ CC 找到第一个 - [ ] → 完成 → 标记 [x]
+  │           │   └─ 写入 task-done.txt / task-blocked.txt
+  │           │   └─ turns 耗尽 或 budget 耗尽 → CC 退出
+  │           │
+  │           ├─ 检查停止条件 ───┐
+  │           │                 │
+  │           │   ALL_COMPLETE? ─┤─ 是 → 停止
+  │           │   ALL_BLOCKED? ──┤─ 是 → 停止
+  │           │   MAX_ROUNDS? ───┤─ 是 → 停止
+  │           │   连续5轮无进展? ─┤─ 是 → 停止
+  │           │                 │
+  │           │   以上皆否 ──────┘─ 等待 5s → 下一轮
+  │           │
+  │           └─ sleep 5
+  │
+  └─ 结束，显示结果摘要
+```
+
+---
+
+## 6. 停止条件
+
+| 条件 | 触发方式 | 含义 |
+|------|----------|------|
+| **ALL_COMPLETE** | CC 在 `task-done.txt` 中写入此标记 | project.md 所有 `- [ ]` 已变 `- [x]` |
+| **ALL_BLOCKED** | CC 在 `task-blocked.txt` 中写入此标记 | 剩余任务全部需要人工决策 |
+| **连续5轮无进展** | 脚本检测 `task-done.txt` 行数不增加 | 可能陷入死循环或 CC 无法完成任务 |
+| **MAX_ROUNDS** | 脚本计数达到 200 轮 | 安全上限，防止无限运行 |
+
+---
+
+## 7. 安全机制
+
+### 7.1 Git Checkpoint
+
+每轮开始前自动 `git commit`。出问题可 `git reset --hard` 回到自动运行前的状态。
+
+### 7.2 Permission Mode: auto
+
+CC 使用 `--permission-mode auto`（Anthropic 2026年3月发布），分类器评估每次工具调用。自动阻止：
+- `curl | bash`
+- `git push --force`
+- 批量删除
+- 3 次连续拒绝 → 降级终止
+
+### 7.3 cc-safe-setup 8 钩子（必须）
+
+AutoFish 的安全防线分为两层：内层是 CC 自带的 `--permission-mode auto`，外层是操作系统级的钩子。两层互补——auto mode 的 17% 漏报率（高危操作未被拦截）由钩子兜底。
+
+详见 §3.5 的安装指南和钩子详解。这里总结钩子在自动化循环中的具体作用：
+
+| 钩子 | 在 AutoFish 循环中的作用 |
+|------|------------------------|
+| Destructive Command Blocker | 防止 CC 在无人值守时执行 `rm -rf` / `git reset --hard` / force push |
+| Branch Push Protector | 防止凌晨自动 push 未测试代码到 main |
+| Syntax Validator | 每轮 CC 编辑 .c 文件后自动检查语法，错误立即发现不对后续轮次产生连锁污染 |
+| Context Monitor | 每轮 50 turns 内，在上下文接近耗尽时自动 `/compact` |
+| Comment Stripper | 确保权限白名单匹配不受注释干扰 |
+| cd+git Auto-Approver | 减少权限弹窗，防止无人值守时卡在等待人类确认 |
+| Secret Leak Prevention | 防止 CC `git add .` 时误提交敏感文件 |
+| API Error Alert | CC 因 API 故障退出时写入告警，而非静默死亡（静默死亡 = 你早上发现什么都没做） |
+
+**钩子未安装的风险**：AutoFish 仍会运行，但上述 8 类事故无任何防护。社区 108 小时无人值守实测中，无钩子运行时出现了 7 种不同类型的故障。
+
+### 7.4 预算上限
+
+`--max-budget-usd 5.00` 每轮。200 轮理论最大 $1000，实际上每轮通常在 $1-3。
+
+### 7.5 自动截停
+
+`auto-prompt.md` 中明确规定 CC 在遇到设计决策、架构变更、安全问题时**必须停止并记录**到 `task-blocked.txt`，不自作主张。
+
+---
+
+## 8. 结果验收
+
+### 验收清单
+
+早上起床后，按以下顺序检查：
+
+```
+□ 1. 读 task-done.txt → 了解 CC 完成了什么
+□ 2. 读 task-blocked.txt → 了解 CC 卡在哪里，需要你做什么决定
+□ 3. 读 auto-log.txt 最后 50 行 → 快速了解运行概况
+□ 4. git diff --stat → 看改了多少文件
+□ 5. git log --oneline | head -20 → 看 commit 历史（每轮结束可能没有 commit，但 checkpoint 有）
+□ 6. 编译 + 运行 → 确认代码能跑
+□ 7. 快速浏览关键源文件 → 确认代码质量可接受
+□ 8.  满意 → 处理阻塞项，更新 project.md 任务清单，准备下一轮
+□ 9.  不满意 → git reset --hard <checkpoint> 回滚，分析原因，调整 auto-prompt.md
+```
+
+### 常见验收结果
+
+| 情况 | 处理方式 |
+|------|----------|
+| 代码能编译，功能正常 | ✅ 验收通过，处理阻塞项，继续 |
+| 代码能编译，但部分功能有 bug | 手动修或让 CC 修（在 project.md 加 bugfix 任务） |
+| 代码不能编译 | 查 auto-log.txt 中的编译错误，可能是缺依赖或环境差异 |
+| CC 走错方向，写了一堆没用的 | 调整 auto-prompt.md 的任务描述，回滚重来 |
+
+---
+
+## 9. 故障排查
+
+| 症状 | 原因 | 解决 |
+|------|------|------|
+| `[ERROR] bash.exe not found` | Git for Windows 不在标准路径 | 手动编辑 `.bat`，在 for 循环中加你的路径 |
+| `date: command not found` | PATH 未注入 Git usr/bin | 检查 `.bat` 中 `%GIT_USR_BIN%` 是否正确 |
+| `claude: command not found` | CC 不在 PATH | `npm install -g @anthropic-ai/claude-code` 或加 CC 路径到系统 PATH |
+| CC 输出乱码 | CMD/Bash 编码问题 | `.bat` 已用纯 ASCII，`.sh` 中文在 bash 中正常 |
+| CC 反复做同一任务 | project.md 的 `[x]` 未正确标记 | 检查 CC 是否有 Edit 权限编辑 project.md |
+| 连续 5 轮无进展后停止 | CC 遇到了它不会做的事 | 读 task-blocked.txt，手动处理阻塞项 |
+| CC 删除了不该删的文件 | 安全钩子未生效 | 确认 cc-safe-setup 已安装且 CC 重启过。运行 `npx cc-safe-setup --doctor` 验证 |
+| 钩子安装失败 / jq not found | jq 未安装 | 从 GitHub 下载 jq-windows-amd64.exe，放到 `C:\Program Files\Git\usr\bin\jq.exe` |
+| 语法检查钩子不工作 | gcc 不在 PATH | `winget install BrechtSanders.WinLibs.POSIX.MSVCRT`，确认 gcc 在 PATH 中 |
+| 钩子导致 CC 变慢 | 语法检查钩子每次编辑后跑 gcc | 正常现象，语法检查耗时 < 1s。如影响体验可临时禁用 syntax-check 钩子 |
+
+---
+
+## 10. 已知限制
+
+1. **设计决策不行**。CC 不能判断"这个关卡好不好玩"、"这个机制该不该加"、"这个配色好不好看"。
+2. **视觉/音频不行**。美术资源和音频需要人工创作或专门的 AI 工具。
+3. **跨文件大重构不行**。涉及 5+ 文件的架构级改动，CC 在 50 turns 内难以高质量完成。
+4. **环境差异**。CC 运行时的 PATH、依赖与你手动运行时的环境可能不同。
+5. **Token 消耗**。一晚（8-10 轮）约消耗 $15-40 API 费用（取决于模型和任务密度）。
+6. **上下文盲区**。每轮是全新会话，CC 不知道上一轮做了什么——它只能通过 project.md 的 `[x]` 状态来判断进度。
+
+---
+
+## 11. 后续开发方向
+
+AutoFish 本身作为一个独立工具可以进一步开发：
+
+### 短期（v1.1）
+
+- [ ] 支持多项目切换（`run-auto.bat --project <path>`）
+- [ ] 每轮开始前自动 `git pull`（如果追踪了远程分支）
+- [ ] 异常轮次自动重试（CC 崩溃时等待更长时间后重试，最多 N 次）
+- [ ] 日志轮转（auto-log.txt 超过 10MB 时归档）
+- [ ] 进度通知（完成后发桌面通知/Webhook）
+
+### 中期（v1.2）
+
+- [ ] GUI 启动器（显示进度条、轮数、日志实时预览）
+- [ ] 多项目并行（同时跑多个项目的自动化）
+- [ ] 定时启动（设置"每晚 2 点自动开始"）
+- [ ] Slack/Discord/微信通知集成
+
+### 长期（v2.0）
+
+- [ ] 智能任务分配（根据任务类型选择不同的 prompt 策略）
+- [ ] 自修复循环（检测到编译错误后自动追加一轮 bugfix）
+- [ ] 学习型 prompt（根据之前轮次的成功率自动调整 prompt 内容）
+- [ ] VS Code 插件集成
+
+---
+
+> **项目地址**：`E:\WorkSpace\github\holdem-cli\.asdf\autoFish\`
+> **脚本备份**：自动化脚本的原始副本存放在该目录中，作为独立开发的起点。
