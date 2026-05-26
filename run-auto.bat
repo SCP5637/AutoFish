@@ -11,6 +11,18 @@ for %%A in ("%SCRIPT_DIR%..") do set "PROJECT_DIR=%%~fA"
 
 cd /d "%PROJECT_DIR%"
 
+:: Check Claude Code (before bash detection)
+where claude >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Claude Code CLI not found.
+    echo   Install: npm install -g @anthropic-ai/claude-code
+    echo   Or:     winget install Anthropic.ClaudeCode
+    echo   Verify: claude --version
+    pause
+    exit /b 1
+)
+echo Claude Code: found
+
 :: Find bash (try multiple known locations)
 set "BASH="
 for %%d in (
@@ -73,6 +85,21 @@ echo   Started: %date% %time%
 echo   Press Ctrl+C to stop at any time
 echo ============================================================
 echo.
+
+:: Check config for CC monitor window
+set "SHOW_CC_WINDOW=0"
+if exist "%SCRIPT_DIR%\config.json" (
+    node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(c.display&&c.display.show_cc_window?'1':'0');}catch(e){process.stdout.write('0');}" "%SCRIPT_DIR%\config.json" > "%TEMP%\af_cc_win.txt" 2>nul
+    if exist "%TEMP%\af_cc_win.txt" (
+        set /p SHOW_CC_WINDOW=<"%TEMP%\af_cc_win.txt"
+        del "%TEMP%\af_cc_win.txt" 2>nul
+    )
+)
+
+if "%SHOW_CC_WINDOW%"=="1" (
+    echo Opening CC monitor window...
+    start "AutoFish - CC Monitor" powershell -NoExit -Command "Write-Host 'AutoFish CC Monitor' -ForegroundColor Cyan; Write-Host 'Close this window to stop monitoring (does not affect automation)' -ForegroundColor DarkYellow; Write-Host ''; Get-Content '%SCRIPT_DIR%\auto-log.txt' -Wait -Tail 10"
+)
 
 :: Hand off to bash loop script
 "%BASH%" "%SCRIPT_DIR%/run-loop.sh"
