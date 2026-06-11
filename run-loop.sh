@@ -58,10 +58,10 @@ SESSION_ROUND_COUNT=0
 
 cd "$PROJECT_DIR"
 
-# init
-echo "" > "$LOG_FILE"
-echo "" > "$DONE_FILE"
-echo "" > "$BLOCKED_FILE"
+# init — truncate without adding empty lines
+: > "$LOG_FILE"
+: > "$DONE_FILE"
+: > "$BLOCKED_FILE"
 echo "0" > "$ROUND_FILE"
 
 log() {
@@ -237,6 +237,44 @@ make_checkpoint() {
     fi
 }
 
+# ========== round checkpoint (smart, with descriptive message) ==========
+make_round_checkpoint() {
+    local round="$1"
+    local enabled
+    enabled=$(config_val "git_checkpoint.enabled" "true")
+    [ "$enabled" != "true" ] && return 0
+
+    local interval
+    interval=$(config_val "git_checkpoint.interval_rounds" "1")
+    if [ "$((round % interval))" -ne 0 ] && [ "$round" -ne 1 ]; then
+        return 0
+    fi
+
+    # Build descriptive message from recently completed tasks
+    local msg=""
+    if [ -f "$DONE_FILE" ]; then
+        # Take last 3 done entries for the commit message
+        local latest
+        latest=$(tail -3 "$DONE_FILE" 2>/dev/null | grep -oP '\]\s+\K.+?(?=\s*—|\s*$)' 2>/dev/null || \
+                 tail -3 "$DONE_FILE" 2>/dev/null | sed 's/.*\] //; s/ —.*//; s/PROGRESS: //; s/SESSION_RESET//')
+        if [ -n "$latest" ]; then
+            msg=$(echo "$latest" | tr '\n' ';' | sed 's/;$//; s/;/, /g')
+        fi
+    fi
+
+    if [ -z "$msg" ]; then
+        msg="round $round checkpoint"
+    fi
+
+    msg="autofish(r$round): $msg"
+
+    git add -A 2>/dev/null || true
+    if ! git diff --cached --quiet 2>/dev/null; then
+        git commit -m "$msg" 2>/dev/null || true
+        log "Git checkpoint(r$round): $msg"
+    fi
+}
+
 # ========== stop conditions ==========
 check_stop_conditions() {
     local round="$1"
@@ -369,6 +407,8 @@ run_cc_round() {
     local round="$1"
     local tmp_log
     tmp_log=$(mktemp)
+    local tmp_err
+    tmp_err=$(mktemp)
 
     log_sep
     log "Round $round start"
@@ -377,6 +417,7 @@ run_cc_round() {
 
     local prompt_text
     prompt_text=$(cat "$PROMPT_FILE")
+    log "Prompt: ${#prompt_text} chars from $PROMPT_FILE"
 
     local continue_flag=""
     if [ "$SESSION_ACTIVE" = true ]; then
@@ -386,33 +427,297 @@ run_cc_round() {
         log "Round $round: starting fresh session"
     fi
 
-    # Run CC with appropriate output mode
-    if [ "$STREAM_PROGRESS" = true ]; then
+    # Cache optimization: exclude dynamic sections from system prompt
+    local cache_flag="--exclude-dynamic-system-prompt-sections"
+
+    local progress_filter="${SCRIPT_DIR}/progress-filter.js"
+
+    if [ "$STREAM_PROGRESS" = true ] && [ -f "$progress_filter" ]; then
+        # Stream mode with clean progress filter
+        log "Mode: stream (filter: $progress_filter)"
         claude -p "$prompt_text" \
             $continue_flag \
+            $cache_flag \
             --permission-mode auto \
             --max-turns "$MAX_TURNS" \
             --max-budget-usd "$MAX_BUDGET" \
+            --verbose \
             --output-format stream-json \
             --include-partial-messages \
-            --verbose \
-            2>&1 | tee -a "$LOG_FILE" \
+            2>"$tmp_err" | node "$progress_filter" 2>/dev/null | tee -a "$LOG_FILE" \
             || exit_code=$?
     else
+        # Non-stream mode with spinner indicator
+        log "Mode: text (stream=$STREAM_PROGRESS, filter_exists=$([ -f "$progress_filter" ] && echo yes || echo no))"
+        local spin_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        local spin_idx=0
+        local start_ts
+        start_ts=$(date +%s)
+
+        # Launch CC in background
         claude -p "$prompt_text" \
             $continue_flag \
+            $cache_flag \
             --permission-mode auto \
             --max-turns "$MAX_TURNS" \
             --max-budget-usd "$MAX_BUDGET" \
-            > "$tmp_log" 2>&1 || exit_code=$?
+            > "$tmp_log" 2>"$tmp_err" &
+        local cc_pid=$!
+        log "CC PID: $cc_pid"
+
+        # Spinner overlay while CC runs
+        while kill -0 $cc_pid 2>/dev/null; do
+            local now_ts
+            now_ts=$(date +%s)
+            local elapsed=$((now_ts - start_ts))
+            local min=$((elapsed / 60))
+            local sec=$((elapsed % 60))
+            local spin="${spin_chars:$spin_idx:1}"
+            spin_idx=$(( (spin_idx + 1) % ${#spin_chars} ))
+            printf "\r  %s [%02d:%02d] CC 工作中..." "$spin" "$min" "$sec"
+            sleep 0.3
+        done
+        printf "\r\x1b[K"  # Clear spinner line
+
+        wait $cc_pid || exit_code=$?
 
         cat "$tmp_log" >> "$LOG_FILE"
         cat "$tmp_log"
     fi
-    rm -f "$tmp_log"
+
+    # Diagnostic: show stderr if CC failed
+    if [ "$exit_code" -ne 0 ]; then
+        local err_size
+        err_size=$(wc -c < "$tmp_err" 2>/dev/null | tr -d '[:space:]')
+        log "CC stderr (${err_size:-0} bytes): $(head -3 "$tmp_err" 2>/dev/null | tr '\n' ' ')"
+        local out_size
+        out_size=$(wc -c < "$tmp_log" 2>/dev/null | tr -d '[:space:]')
+        log "CC stdout (${out_size:-0} bytes)"
+    fi
+
+    rm -f "$tmp_log" "$tmp_err"
 
     log "Round $round end (exit=$exit_code)"
     return $exit_code
+}
+
+# ========== WhatNeedToDo handling ==========
+WNTD_FILE="${PROJECT_DIR}/.asdf/WhatNeedToDo.md"
+
+generate_what_need_to_do() {
+    log "Generating WhatNeedToDo.md (checklist format)..."
+
+    local summary_prompt
+    summary_prompt=$(cat << 'PROMPT_EOF'
+你是一个项目状态总结助手。AutoFish 在自动执行过程中遇到了阻塞，需要你来分析并生成一份**交互式**处理指南。
+
+## 关键要求：使用 checkbox 清单格式
+
+你必须使用 `- [ ]` 格式列出每个阻塞项。这样用户可以在处理完后将 `- [ ]` 改为 `- [x]`，下次 AutoFish 启动时会自动识别。
+
+## 工作步骤
+
+1. 阅读 `.asdf/project.md` — 项目任务清单
+2. 阅读 `.asdf/task-done.txt` — 已完成任务
+3. 阅读 `.asdf/task-blocked.txt` — 阻塞任务
+4. 阅读 `.asdf/auto-log.txt` 最后50行 — 了解上下文
+
+5. 使用 Write 工具创建 `.asdf/WhatNeedToDo.md`，严格按此格式：
+
+```markdown
+# AutoFish 阻塞处理指南
+
+> 生成时间：[当前时间]
+> 处理状态：0/N 已解决
+> AutoFish 在自动执行过程中遇到需要人工介入的问题，已自动暂停。
+
+## 阻塞概览
+[2-3句话概括]
+
+## 阻塞任务清单（逐个处理，处理完打勾）
+
+- [ ] **任务名1**
+  - **阻塞原因**：XXX
+  - **你需要做什么**：具体的操作步骤（改哪个文件、做什么决策）
+  - **备选方案**（如是设计决策）：A. XXX B. XXX → 推荐：XXX
+  - **用户反馈**：（在此写下你的决定/说明）
+
+- [ ] **任务名2**
+  - **阻塞原因**：XXX
+  - **你需要做什么**：XXX
+  - **用户反馈**：（在此写下你的决定/说明）
+
+## 已完成任务（本轮自动完成）
+[从 task-done.txt 列出]
+
+## 待执行任务（阻塞解除后自动继续）
+[从 project.md 列出尚未开始的 - [ ] 任务]
+
+## 用户反馈区
+> 在此区域写任何补充说明、全局决策、方案选择。
+> 你的文字会被保留，不会被 AutoFish 覆盖。
+
+## 处理指南
+
+1. 处理上面列出的每个 `- [ ]` 阻塞项
+2. 处理完后将 `- [ ]` 改为 `- [x]`
+3. 在"用户反馈"行写下你的解决方案/决定
+4. 重新双击 `run-auto.bat` 启动 AutoFish
+5. AutoFish 会识别你的处理结果并自动继续
+```
+
+## 注意
+- 中文
+- 每个阻塞项必须是 `- [ ]` 开头（这是关键的交互格式）
+- 每个阻塞项下必须有"用户反馈："行供用户填写
+- 信息要具体可操作
+PROMPT_EOF
+)
+
+    claude -p "$summary_prompt" \
+        --permission-mode auto \
+        --max-turns 15 \
+        --max-budget-usd 0.50 \
+        2>&1 | tee -a "$LOG_FILE" || true
+
+    if [ -f "$WNTD_FILE" ]; then
+        log "WhatNeedToDo.md generated: $WNTD_FILE"
+    else
+        log "[WARN] CC did not create WhatNeedToDo.md, generating fallback..."
+        cat > "$WNTD_FILE" << FALLBACK_EOF
+# AutoFish 阻塞处理指南
+
+> 生成时间：$(date '+%Y-%m-%d %H:%M')
+> 处理状态：待处理
+
+## 阻塞任务清单
+
+$(while IFS= read -r line; do [ -n "$line" ] && echo "- [ ] $line"; done < "$BLOCKED_FILE" 2>/dev/null)
+
+## 已完成任务
+
+$(cat "$DONE_FILE" 2>/dev/null || echo "无记录")
+
+## 处理完成后
+
+重新运行 AutoFish。脚本会自动检测阻塞是否已解决。
+FALLBACK_EOF
+        log "Fallback WhatNeedToDo.md created"
+    fi
+}
+
+update_what_need_to_do() {
+    log "Updating WhatNeedToDo.md (preserving user input)..."
+
+    local update_prompt
+    update_prompt=$(cat << 'PROMPT_EOF'
+你是一个项目状态更新助手。用户已阅读 WhatNeedToDo.md 并对部分阻塞项做了处理（标记 `- [x]`、写了反馈）。
+
+## 关键原则：增量更新，绝不覆盖用户内容
+
+1. **必须保留**所有用户标记的 `- [x]` 项及其下方用户写的全部内容
+2. **必须保留**"用户反馈区"中用户写的所有文字
+3. **只更新**仍然为 `- [ ]` 的项：检查其阻塞状态是否发生变化
+4. **不要重写整个文档**。只改变化的部分
+
+## 工作步骤
+
+1. 阅读 `.asdf/WhatNeedToDo.md` — 了解用户已处理了什么
+2. 阅读 `.asdf/task-blocked.txt` — 检查阻塞状态是否有变化
+3. 阅读 `.asdf/project.md` — 确认任务状态
+
+4. 更新 WhatNeedToDo.md：
+   - 如果某个 `- [ ]` 实际上已经被用户用其他方式解决了：改为 `- [x]` 并简短说明
+   - 如果有新的阻塞出现（之前文档没列出的）：追加 `- [ ]` 项
+   - 如果某个阻塞原因已过时：更新原因描述
+   - 更新"处理状态"计数：X/N 已解决
+   - 更新"生成时间"
+   - **用户写的任何内容都保留不动**
+
+5. 如果用户通过"用户反馈区"给出了全局决策（如"全部用方案A"），据此更新各阻塞项
+
+## 注意
+- 不要删除用户文字
+- 不要重新生成整个文档
+- 更新完仍然有 `- [ ]` 项是正常的（用户还需要处理）
+PROMPT_EOF
+)
+
+    claude -p "$update_prompt" \
+        --permission-mode auto \
+        --max-turns 15 \
+        --max-budget-usd 0.50 \
+        2>&1 | tee -a "$LOG_FILE" || true
+
+    log "WhatNeedToDo.md updated"
+}
+
+handle_what_need_to_do() {
+    if [ ! -f "$WNTD_FILE" ]; then
+        return 0
+    fi
+
+    log "Found existing WhatNeedToDo.md, analyzing user interaction..."
+
+    # Extract only the "阻塞任务清单" section to avoid counting
+    # items from "待执行任务" section or code-block examples
+    local section
+    section=$(sed -n '/^## 阻塞任务清单/,/^## /p' "$WNTD_FILE" 2>/dev/null)
+
+    local unresolved
+    unresolved=$(echo "$section" | grep -c "^- \[ \]" 2>/dev/null | tr -d '\r\n' || echo 0)
+    local resolved
+    resolved=$(echo "$section" | grep -c "^- \[x\]" 2>/dev/null | tr -d '\r\n' || echo 0)
+
+    log "Blocked items in WNTD: $resolved resolved, $unresolved remaining"
+
+    # Case 1: All blocked items resolved → integrate and continue execution
+    if [ "$unresolved" -eq 0 ] && [ "$resolved" -gt 0 ]; then
+        log "All blocked items resolved by user, continuing execution..."
+        rm -f "$WNTD_FILE"
+        return 0
+    fi
+
+    # Case 2: User has interacted (some [x]) → CC updates the doc preserving user input
+    if [ "$resolved" -gt 0 ]; then
+        log "User resolved $resolved item(s), updating document via CC..."
+        update_what_need_to_do
+
+        # RE-CHECK after CC update — CC may have resolved remaining items
+        local new_section
+        new_section=$(sed -n '/^## 阻塞任务清单/,/^## /p' "$WNTD_FILE" 2>/dev/null)
+        local new_unresolved
+        new_unresolved=$(echo "$new_section" | grep -c "^- \[ \]" 2>/dev/null | tr -d '\r\n' || echo 0)
+
+        if [ "$new_unresolved" -eq 0 ]; then
+            log "CC resolved all remaining items during update, continuing..."
+            rm -f "$WNTD_FILE"
+            return 0
+        fi
+
+        log "Still $new_unresolved item(s) need human review. See: $WNTD_FILE"
+        exit 0
+    fi
+
+    # Case 3: No [x] items yet — user hasn't interacted with the checklist
+    local has_blocked=false
+    if [ -f "$BLOCKED_FILE" ] && [ -s "$BLOCKED_FILE" ]; then
+        local blocked_items
+        blocked_items=$(grep -cv "ALL_BLOCKED" "$BLOCKED_FILE" 2>/dev/null | tr -d '\r\n' || echo 0)
+        if [ "$blocked_items" -gt 0 ] 2>/dev/null; then
+            has_blocked=true
+        fi
+    fi
+
+    if $has_blocked; then
+        log "Blocks present and WNTD not yet reviewed by user."
+        log "Edit: $WNTD_FILE (mark resolved as - [x], add notes), then restart."
+        exit 0
+    else
+        log "No active blocks found, removing WNTD and continuing..."
+        rm -f "$WNTD_FILE"
+        return 0
+    fi
 }
 
 # ========== main ==========
@@ -428,6 +733,9 @@ main() {
         log "[FATAL] Safety check failed, aborting"
         exit 1
     fi
+
+    # Check if previous block was resolved by human
+    handle_what_need_to_do
 
     make_checkpoint
 
@@ -456,9 +764,21 @@ main() {
         fi
 
         run_cc_round "$round" || true
+        local round_exit=$?
 
-        SESSION_ACTIVE=true
-        SESSION_ROUND_COUNT=$((SESSION_ROUND_COUNT + 1))
+        # Smart checkpoint after each round (interval configurable)
+        make_round_checkpoint "$round"
+
+        # Only continue session if round was successful (exit=0)
+        # Failed rounds mean CC couldn't work — continuing them is useless
+        if [ "$round_exit" -eq 0 ]; then
+            SESSION_ACTIVE=true
+            SESSION_ROUND_COUNT=$((SESSION_ROUND_COUNT + 1))
+        else
+            log "Round $round failed (exit=$round_exit), will start fresh next round"
+            SESSION_ACTIVE=false
+            SESSION_ROUND_COUNT=0
+        fi
 
         local stop_reason
         stop_reason=$(check_stop_conditions "$round")
@@ -470,6 +790,7 @@ main() {
                 ;;
             ALL_BLOCKED)
                 log ">>> All remaining tasks blocked, human review needed"
+                generate_what_need_to_do
                 break
                 ;;
             MAX_ROUNDS)
@@ -500,6 +821,7 @@ main() {
                 if [ "$stale_count" -ge 5 ]; then
                     log ">>> ${stale_count} rounds with no progress, stopping"
                     echo "ALL_BLOCKED" >> "$BLOCKED_FILE"
+                    generate_what_need_to_do
                     break
                 fi
                 ;;
