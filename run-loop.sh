@@ -215,7 +215,7 @@ validate_project_doc() {
     # Check task format
     local task_format
     task_format=$(config_val "project_validation.task_format" "- [ ]")
-    if ! grep -qF "$task_format" "$doc_file"; then
+    if ! grep -qF -e "$task_format" "$doc_file"; then
         log "[FATAL] No tasks found in project.md (format: '$task_format')"
         return 1
     fi
