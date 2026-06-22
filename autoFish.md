@@ -25,7 +25,7 @@
 
 AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系统。
 
-核心思路：一个根目录启动器双击启动 → 菜单选择项目 → 外层 `while` 循环 → 每轮启动一个新的 CC 非交互会话 → CC 读取集中式 `project.md` 逐项完成 → 会话结束 → 自动开始下一轮 → 直到所有任务完成或需要人工介入时停止。
+核心思路：一个上层入口 `autoFish.bat` 双击启动 → 默认转发到 `run-auto.bat` → 菜单选择项目 → 外层 `while` 循环 → 每轮启动一个新的 CC 非交互会话 → CC 读取集中式 `project.md` 逐项完成 → 会话结束 → 自动开始下一轮 → 直到所有任务完成或需要人工介入时停止。
 
 **实战验证**：2026-05-25 凌晨，AutoFish 在 SokobanLike 项目中连续运行 8 轮（约 1.5 小时），自动完成了 **C0.2 到 C2.8 共 19 个子阶段**的全部代码实现，包括：
 - 四方向移动 + 撞墙检测 + 动画
@@ -43,6 +43,9 @@ AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系
 
 ```
 ┌──────────────────────────────────────────────────────────┐
+│                      autoFish.bat                        │
+│  1. 上层入口，默认转发到 run-auto.bat                        │
+│                                                          │
 │                      run-auto.bat                         │
 │  1. 检测 CC 是否安装（友好错误提示）                         │
 │  2. 探测 bash.exe 位置（6 个常见路径）                      │
@@ -97,7 +100,8 @@ AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系
 
 ```
 项目根目录/
-├── run-auto.bat              ← 源文件：Windows 启动器
+├── autoFish.bat              ← 源文件：Windows 上层入口
+├── run-auto.bat              ← 源文件：Windows 实际启动器
 ├── run-loop.sh               ← 源文件：bash 循环引擎
 ├── auto-prompt.md            ← 源文件：通用任务提示模板
 ├── bootstrap-seed.md         ← 源文件：新项目 bootstrap 提示
@@ -121,7 +125,8 @@ AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系
 
 | 文件 | 谁读 | 用途 |
 |------|------|------|
-| `run-auto.bat` | 你（双击） | 根启动器。找 `claude`/`node`/`bash` → 注入 PATH → 调 `autofish.js` |
+| `autoFish.bat` | 你（双击） | Windows 上层入口。默认调用 `run-auto.bat`，为后续分层扩展预留稳定入口 |
+| `run-auto.bat` | `autoFish.bat` 或你直接运行 | 实际启动器。找 `claude`/`node`/`bash` → 注入 PATH → 调 `autofish.js` |
 | `autofish.js` | `run-auto.bat` 调用 | 控制面。显示项目菜单、读取 `state/configList.json`、探测项目路径、创建每项目 state、决定是 bootstrap 还是进入 run-loop |
 | `run-loop.sh` | `autofish.js` 调用 | 循环引擎。在目标项目目录里运行 Claude，但配置/日志/阻塞状态都读取集中 state 路径 |
 | 根 `config.json` | `autofish.js` + `run-loop.sh` 读取 | 根默认配置模板。新项目创建时复制为每项目 `config.json` |
