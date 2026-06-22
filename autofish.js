@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const readline = require('readline');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 
 const ROOT = normalizePath(process.env.AUTOFISH_ROOT || __dirname);
 const ROOT_CONFIG_FILE = path.join(ROOT, 'config.json');
@@ -12,6 +13,20 @@ const STATE_DIR = path.join(ROOT, 'state');
 const PROJECTS_DIR = path.join(STATE_DIR, 'projects');
 const REGISTRY_FILE = path.join(STATE_DIR, 'configList.json');
 const BASH = process.env.AUTOFISH_BASH || 'bash';
+const CLAUDE_HOME = path.join(os.homedir(), '.claude');
+const CLAUDE_HOOKS_DIR = path.join(CLAUDE_HOME, 'hooks');
+const CLAUDE_SETTINGS_FILE = path.join(CLAUDE_HOME, 'settings.json');
+const CLAUDE_SETTINGS_LOCAL_FILE = path.join(CLAUDE_HOME, 'settings.local.json');
+const SAFE_SETUP_HOOKS = Object.freeze([
+  'destructive-guard.sh',
+  'branch-guard.sh',
+  'syntax-check.sh',
+  'context-monitor.sh',
+  'comment-strip.sh',
+  'cd-git-allow.sh',
+  'secret-guard.sh',
+  'api-error-alert.sh',
+]);
 
 const DEFAULT_BOOTSTRAP = Object.freeze({
   schema_version: 1,
@@ -26,8 +41,10 @@ const DEFAULT_BOOTSTRAP = Object.freeze({
   last_updated_at: null,
 });
 
+const COLOR = buildColorPalette();
+
 main().catch((error) => {
-  console.error(`[FATAL] ${error.message}`);
+  console.error(colorize('error', `[FATAL] ${error.message}`));
   process.exit(1);
 });
 
@@ -39,14 +56,14 @@ async function main() {
   const selection = await selectProject(registry);
 
   if (!selection) {
-    console.log('\nAutoFish exited.');
+    console.log(`\n${colorize('note', 'AutoFish exited.')}`);
     return;
   }
 
   if (!fs.existsSync(selection.projectDir)) {
-    console.log('\n=== Project missing ===');
-    console.log(`Path: ${selection.projectDir}`);
-    console.log('Re-register project with New Project.');
+    console.log(`\n${colorize('error', '=== Project missing ===')}`);
+    console.log(colorize('note', `Path: ${selection.projectDir}`));
+    console.log(colorize('note', 'Re-register project with New Project.'));
     return;
   }
 
@@ -75,6 +92,15 @@ async function main() {
   const status = projectStatus(selection, projectConfig);
   printProjectSummary(selection, projectConfig, status);
 
+  const pluginReport = checkPluginPreflight(projectConfig);
+  printPluginPreflight(pluginReport);
+
+  if (pluginReport.shouldBlock || pluginReport.shouldOpenAssistant) {
+    const launched = openSafeSetupWindow(selection, pluginReport);
+    printSafeSetupLaunchResult(launched, pluginReport, selection);
+    return;
+  }
+
   if (!fs.existsSync(selection.projectDoc)) {
     const reason = 'project.md missing';
     projectConfig = markBootstrapLaunch(selection, projectConfig, 'new');
@@ -93,7 +119,7 @@ async function main() {
 
   ensureRuntimeFiles(selection);
   maybeOpenMonitorWindow(selection);
-  runLoop(selection, projectConfig);
+  await runLoop(selection, projectConfig);
 }
 
 async function selectProject(registry) {
@@ -112,13 +138,13 @@ async function selectProject(registry) {
 
     if (answer === '0') {
       if (!registry.lastProjectId) {
-        console.log('\n[INPUT] No last project.\n');
+        console.log(`\n${colorize('warn', '[INPUT] No last project.')}\n`);
         continue;
       }
 
       const last = registry.projects.find((project) => project.id === registry.lastProjectId);
       if (!last) {
-        console.log('\n[INPUT] Last project missing from registry.\n');
+        console.log(`\n${colorize('warn', '[INPUT] Last project missing from registry.')}\n`);
         continue;
       }
 
@@ -139,53 +165,53 @@ async function selectProject(registry) {
       return normalizeProjectRecord(registry.projects[index - 1]);
     }
 
-    console.log('\n[INPUT] Invalid selection.\n');
+    console.log(`\n${colorize('warn', '[INPUT] Invalid selection.')}\n`);
   }
 }
 
 function printMenu(registry) {
   console.log('');
-  console.log('================ AutoFish ================');
+  console.log(colorize('key', '================ AutoFish ================'));
   console.log('');
-  console.log('Root:');
-  console.log(`  ${toPosixPath(ROOT)}`);
+  console.log(colorize('key', 'Root:'));
+  console.log(colorize('note', `  ${toPosixPath(ROOT)}`));
   console.log('');
-  console.log('Last:');
+  console.log(colorize('key', 'Last:'));
 
   if (registry.lastProjectId) {
     const last = registry.projects.find((project) => project.id === registry.lastProjectId);
     if (last) {
-      console.log(`  0. ${padRight(last.name, 28)} [${projectStatus(last)}]`);
-      console.log(`     ${last.projectDir}`);
+      console.log(`  0. ${padRight(last.name, 28)} ${colorize('run', `[${projectStatus(last)}]`)}`);
+      console.log(colorize('note', `     ${last.projectDir}`));
     } else {
-      console.log('  0. none');
+      console.log(colorize('note', '  0. none'));
     }
   } else {
-    console.log('  0. none');
+    console.log(colorize('note', '  0. none'));
   }
 
   console.log('');
-  console.log('Projects:');
+  console.log(colorize('key', 'Projects:'));
   if (registry.projects.length === 0) {
-    console.log('  (none)');
+    console.log(colorize('note', '  (none)'));
   } else {
     registry.projects.forEach((project, index) => {
-      console.log(`  ${String(index + 1).padEnd(2)} ${padRight(project.name, 28)} [${projectStatus(project)}]`);
-      console.log(`     ${project.projectDir}`);
+      console.log(`  ${String(index + 1).padEnd(2)} ${padRight(project.name, 28)} ${colorize('run', `[${projectStatus(project)}]`)}`);
+      console.log(colorize('note', `     ${project.projectDir}`));
     });
   }
 
   console.log('');
-  console.log('Actions:');
-  console.log(`  ${registry.projects.length + 1}. New Project`);
-  console.log('  X. Exit');
+  console.log(colorize('key', 'Actions:'));
+  console.log(colorize('run', `  ${registry.projects.length + 1}. New Project`));
+  console.log(colorize('run', '  X. Exit'));
   console.log('');
-  console.log('==========================================');
+  console.log(colorize('key', '=========================================='));
 }
 
 async function createNewProjectInteractive(registry) {
   while (true) {
-    console.log('\n=== New Project ===\n');
+    console.log(`\n${colorize('key', '=== New Project ===')}\n`);
     const raw = (await ask('Input project path (blank = cancel): ')).trim();
     if (!raw) {
       console.log('');
@@ -207,7 +233,7 @@ async function createNewProjectInteractive(registry) {
 
     const existing = registry.projects.find((project) => samePath(project.projectDir, resolved));
     if (existing) {
-      console.log(`\nUsing existing project -> ${existing.name}\n`);
+      console.log(`\n${colorize('warn', `Using existing project -> ${existing.name}`)}\n`);
       return normalizeProjectRecord(existing);
     }
 
@@ -222,7 +248,7 @@ async function createNewProjectInteractive(registry) {
 async function resolveProjectPathInteractive(inputPath) {
   const normalizedInput = normalizeInputPath(inputPath);
   if (!normalizedInput) {
-    console.log('\n[PATH] Path invalid.\n');
+    console.log(`\n${colorize('warn', '[PATH] Path invalid.')}\n`);
     return null;
   }
 
@@ -247,15 +273,15 @@ async function resolveProjectPathInteractive(inputPath) {
   }
 
   console.log('');
-  console.log('=== Detected projects ===');
-  console.log('Current path is not a git project. Found multiple nearby projects:');
+  console.log(colorize('key', '=== Detected projects ==='));
+  console.log(colorize('note', 'Current path is not a git project. Found multiple nearby projects:'));
   candidates.forEach((candidate, index) => {
-    console.log(`  ${index + 1}. ${candidate}`);
+    console.log(colorize('note', `  ${index + 1}. ${candidate}`));
   });
   console.log('');
-  console.log('Actions:');
-  console.log('  C. Use current path anyway');
-  console.log('  R. Re-enter path');
+  console.log(colorize('key', 'Actions:'));
+  console.log(colorize('run', '  C. Use current path anyway'));
+  console.log(colorize('run', '  R. Re-enter path'));
   console.log('');
 
   while (true) {
@@ -273,7 +299,7 @@ async function resolveProjectPathInteractive(inputPath) {
       return candidates[index - 1];
     }
 
-    console.log('\n[INPUT] Invalid selection.\n');
+    console.log(`\n${colorize('warn', '[INPUT] Invalid selection.')}\n`);
   }
 }
 
@@ -397,12 +423,10 @@ function normalizeProjectConfig(config, project) {
 function normalizeBootstrapState(currentBootstrap, hasProjectDoc) {
   const bootstrap = { ...DEFAULT_BOOTSTRAP, ...(currentBootstrap || {}) };
 
-  if (!currentBootstrap) {
-    if (hasProjectDoc) {
-      bootstrap.status = 'awaiting_project_confirmation';
-      bootstrap.phase = 4;
-      bootstrap.project_doc_source = 'manual_existing';
-    }
+  if (!currentBootstrap && hasProjectDoc) {
+    bootstrap.status = 'awaiting_project_confirmation';
+    bootstrap.phase = 4;
+    bootstrap.project_doc_source = 'manual_existing';
   }
 
   return bootstrap;
@@ -476,6 +500,260 @@ function ensureRuntimeFiles(project) {
   }
 }
 
+function checkPluginPreflight(projectConfig) {
+  const plugins = projectConfig.plugins || {};
+  const required = Array.isArray(plugins.required) ? plugins.required : [];
+  const optional = Array.isArray(plugins.optional) ? plugins.optional : [];
+  const checkEnabled = plugins.check_on_startup !== false;
+  const openInstallAssistant = plugins.open_install_assistant_on_missing !== false;
+  const doctorOnStartup = plugins.doctor_on_startup === true;
+
+  const report = {
+    skipped: !checkEnabled,
+    required,
+    optional,
+    missingRequired: [],
+    missingOptional: [],
+    warnings: [],
+    notes: [],
+    details: [],
+    shouldBlock: false,
+    shouldOpenAssistant: false,
+  };
+
+  if (!checkEnabled) {
+    return report;
+  }
+
+  const allPlugins = [...new Set([...required, ...optional])];
+  for (const plugin of allPlugins) {
+    const isRequired = required.includes(plugin);
+    const detail = inspectPlugin(plugin, { doctorOnStartup });
+    report.details.push(detail);
+
+    if (!detail.ok) {
+      if (isRequired) {
+        report.missingRequired.push(plugin);
+      } else {
+        report.missingOptional.push(plugin);
+      }
+    }
+
+    if (detail.warnings.length > 0) {
+      report.warnings.push(...detail.warnings);
+    }
+    if (detail.notes.length > 0) {
+      report.notes.push(...detail.notes);
+    }
+  }
+
+  report.shouldBlock = report.missingRequired.length > 0;
+  report.shouldOpenAssistant = openInstallAssistant && (report.missingRequired.length > 0 || report.missingOptional.includes('cc-safe-setup'));
+  return report;
+}
+
+function inspectPlugin(plugin, options = {}) {
+  if (plugin === 'cc-safe-setup') {
+    return inspectSafeSetup(options);
+  }
+
+  const commandExistsResult = commandExists(plugin);
+  if (commandExistsResult) {
+    return {
+      plugin,
+      ok: true,
+      status: 'installed',
+      warnings: [],
+      notes: [`${plugin}: command found in PATH`],
+    };
+  }
+
+  const npmCheck = spawnSync('npm', ['list', '-g', plugin], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+
+  if (npmCheck.status === 0) {
+    return {
+      plugin,
+      ok: true,
+      status: 'installed',
+      warnings: [],
+      notes: [`${plugin}: found in global npm packages`],
+    };
+  }
+
+  return {
+    plugin,
+    ok: false,
+    status: 'missing',
+    warnings: [],
+    notes: [`${plugin}: not found in PATH or global npm packages`],
+  };
+}
+
+function inspectSafeSetup(options = {}) {
+  const warnings = [];
+  const notes = [];
+
+  const hooksDirExists = fs.existsSync(CLAUDE_HOOKS_DIR);
+  const hookFiles = SAFE_SETUP_HOOKS.filter((file) => fs.existsSync(path.join(CLAUDE_HOOKS_DIR, file)));
+  const hooksDirFiles = hooksDirExists
+    ? fs.readdirSync(CLAUDE_HOOKS_DIR).filter((name) => name.endsWith('.sh'))
+    : [];
+
+  const settingsFiles = [CLAUDE_SETTINGS_FILE, CLAUDE_SETTINGS_LOCAL_FILE].filter((file) => fs.existsSync(file));
+  const settingsText = settingsFiles.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+  const hooksRegistered = settingsText.includes('hooks') && (settingsText.includes('/hooks/') || SAFE_SETUP_HOOKS.some((file) => settingsText.includes(file)));
+
+  const jqInstalled = commandExists('jq');
+  const gccInstalled = commandExists('gcc');
+
+  if (!hooksDirExists) {
+    notes.push(`cc-safe-setup: hooks directory missing -> ${CLAUDE_HOOKS_DIR}`);
+  } else {
+    notes.push(`cc-safe-setup: hooks directory found -> ${CLAUDE_HOOKS_DIR}`);
+  }
+
+  if (hookFiles.length < 4) {
+    notes.push(`cc-safe-setup: expected hook scripts too few (${hookFiles.length}/${SAFE_SETUP_HOOKS.length})`);
+  } else {
+    notes.push(`cc-safe-setup: found ${hookFiles.length}/${SAFE_SETUP_HOOKS.length} expected hook scripts`);
+  }
+
+  if (!hooksRegistered) {
+    notes.push('cc-safe-setup: no hook registration found in Claude settings');
+  } else {
+    notes.push('cc-safe-setup: hook registration found in Claude settings');
+  }
+
+  if (!jqInstalled) {
+    warnings.push('cc-safe-setup: jq not found in PATH; some hook logic may fail');
+  }
+  if (!gccInstalled) {
+    warnings.push('cc-safe-setup: gcc not found in PATH; syntax-check hook may fail');
+  }
+
+  if (options.doctorOnStartup) {
+    const doctor = spawnSync('npx', ['cc-safe-setup', '--doctor'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (doctor.status === 0) {
+      notes.push('cc-safe-setup: doctor passed');
+    } else {
+      warnings.push('cc-safe-setup: doctor failed or returned non-zero');
+    }
+  }
+
+  const ok = hooksDirExists && hookFiles.length >= 4 && hooksRegistered;
+
+  return {
+    plugin: 'cc-safe-setup',
+    ok,
+    status: ok ? 'installed' : 'missing',
+    warnings,
+    notes,
+    meta: {
+      hooksDirExists,
+      hookFiles,
+      hooksDirFiles,
+      settingsFiles,
+      hooksRegistered,
+      jqInstalled,
+      gccInstalled,
+    },
+  };
+}
+
+function printPluginPreflight(report) {
+  if (report.skipped) {
+    console.log(colorize('note', 'Plugin preflight skipped by config.'));
+    console.log('');
+    return;
+  }
+
+  console.log(colorize('key', '=== Plugin preflight ==='));
+  for (const detail of report.details) {
+    const color = detail.ok ? 'run' : 'warn';
+    console.log(colorize(color, `${detail.plugin}: ${detail.status}`));
+    for (const note of detail.notes) {
+      console.log(colorize('note', `  - ${note}`));
+    }
+  }
+  for (const warning of report.warnings) {
+    console.log(colorize('warn', `  ! ${warning}`));
+  }
+  if (report.missingRequired.length > 0 || report.missingOptional.length > 0) {
+    console.log(colorize('note', '  install: npx cc-safe-setup'));
+    console.log(colorize('note', '  verify:  npx cc-safe-setup --doctor'));
+    console.log(colorize('note', '  after:   restart Claude Code / AutoFish'));
+  }
+  console.log('');
+}
+
+function openSafeSetupWindow(project, pluginReport) {
+  const detail = pluginReport.details.find((item) => item.plugin === 'cc-safe-setup');
+  const diagnostics = detail ? [...detail.notes, ...detail.warnings] : ['cc-safe-setup missing'];
+  const prompt = [
+    '# AutoFish safety hooks setup assistant',
+    '',
+    '你现在不是在做项目开发。你只负责帮助用户安装并验证 AutoFish 所需的安全 hooks。',
+    '',
+    '要求：',
+    '1. 解释 AutoFish 检测到的 hooks 缺失或无效问题。',
+    '2. 指导用户执行 `! npx cc-safe-setup`。',
+    '3. 如缺少依赖，指导用户安装 jq / gcc。',
+    '4. 指导用户执行 `! npx cc-safe-setup --doctor`。',
+    '5. 检查 `~/.claude/hooks` 与 `~/.claude/settings.json`。',
+    '6. 安装完成后明确提醒：必须重启 Claude Code / AutoFish。',
+    '7. 禁止修改目标项目代码。',
+    '',
+    '## Diagnostics',
+    ...diagnostics.map((line) => `- ${line}`),
+    '',
+    '## Runtime context',
+    `- Project: ${project.projectDir}`,
+    `- Claude hooks dir: ${toPosixPath(CLAUDE_HOOKS_DIR)}`,
+    `- Claude settings: ${toPosixPath(CLAUDE_SETTINGS_FILE)}`,
+    `- Claude settings local: ${toPosixPath(CLAUDE_SETTINGS_LOCAL_FILE)}`,
+    '',
+    'Stop after hooks are installed and verified.',
+    '',
+  ].join('\n');
+
+  const scriptPath = path.join(project.stateDir, 'safe-setup-launch.ps1');
+  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = 'AutoFish Safety Hooks Setup - ${psSingleQuote(project.name)}'\n$setupPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host 'Install Claude Code first, then rerun AutoFish.' -ForegroundColor DarkYellow\n  return\n}\n& claude -n 'AutoFish Safety Hooks Setup - ${psSingleQuote(project.name)}' $setupPrompt\nWrite-Host ''\nWrite-Host 'Safety setup session ended. Restart Claude Code / AutoFish if hooks changed.' -ForegroundColor DarkYellow\n`;
+  fs.writeFileSync(scriptPath, script, 'utf8');
+
+  const result = spawnSync('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+    cwd: project.projectDir,
+    env: process.env,
+    windowsHide: false,
+  });
+
+  return result.status === 0 && !result.error;
+}
+
+function printSafeSetupLaunchResult(launched, report, project) {
+  console.log(colorize('warn', '=== Safety hooks attention required ==='));
+  console.log(colorize('note', `Project: ${project.projectDir}`));
+  console.log(colorize('note', `Required missing: ${report.missingRequired.join(', ') || '(none)'}`));
+  console.log(colorize('note', `Optional missing: ${report.missingOptional.join(', ') || '(none)'}`));
+  console.log('');
+
+  if (launched) {
+    console.log(colorize('run', 'Opened Claude safety-hooks setup window.'));
+    console.log(colorize('note', 'Complete install + doctor there, then restart Claude Code / AutoFish.'));
+  } else {
+    console.log(colorize('error', '[ERROR] Failed to open hooks setup window.'));
+    console.log(colorize('note', 'Run manually: npx cc-safe-setup'));
+    console.log(colorize('note', 'Verify manually: npx cc-safe-setup --doctor'));
+  }
+
+  console.log('');
+}
+
 function maybeOpenMonitorWindow(project) {
   const projectConfig = readJson(project.configFile, {});
   const showWindow = Boolean(projectConfig.display && projectConfig.display.show_cc_window);
@@ -512,7 +790,10 @@ function openBootstrapWindow(project, projectConfig, mode, reason) {
   return result.status === 0 && !result.error;
 }
 
-function runLoop(project, projectConfig) {
+async function runLoop(project, projectConfig) {
+  const stopFile = path.join(project.runtimeDir, 'stop-requested');
+  try { fs.unlinkSync(stopFile); } catch {}
+
   const env = {
     ...process.env,
     AUTOFISH_ROOT: project.root,
@@ -525,14 +806,65 @@ function runLoop(project, projectConfig) {
     AUTOFISH_BOOTSTRAP_STATUS: projectConfig.bootstrap.status,
   };
 
-  const result = spawnSync(BASH, [toPosixPath(path.join(ROOT, 'run-loop.sh'))], {
+  const child = spawn(BASH, [toPosixPath(path.join(ROOT, 'run-loop.sh'))], {
     cwd: ROOT,
     env,
     stdio: 'inherit',
     windowsHide: false,
   });
 
-  process.exit(result.status || 0);
+  let stopRequested = false;
+  const requestStop = (signal) => {
+    if (!stopRequested) {
+      stopRequested = true;
+      try {
+        fs.writeFileSync(stopFile, `${new Date().toISOString()} ${signal}\n`, 'utf8');
+      } catch {}
+      console.log(`\n${colorize('warn', `[STOP] ${signal} received. Requesting graceful stop...`)}`);
+      try { child.kill('SIGINT'); } catch {}
+      return;
+    }
+
+    console.log(colorize('error', '[STOP] Second interrupt received. Forcing termination...'));
+    forceKillProcessTree(child.pid);
+  };
+
+  const onSigInt = () => requestStop('SIGINT');
+  const onSigTerm = () => requestStop('SIGTERM');
+  process.on('SIGINT', onSigInt);
+  process.on('SIGTERM', onSigTerm);
+
+  const exitCode = await new Promise((resolve) => {
+    child.on('exit', (code, signal) => {
+      process.off('SIGINT', onSigInt);
+      process.off('SIGTERM', onSigTerm);
+      if (signal) {
+        resolve(1);
+      } else {
+        resolve(code ?? 0);
+      }
+    });
+  });
+
+  process.exitCode = exitCode;
+}
+
+function forceKillProcessTree(pid) {
+  if (!pid) {
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return;
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {}
 }
 
 function projectStatus(project, configOverride = null) {
@@ -593,34 +925,34 @@ function bootstrapReason(projectConfig) {
 function printProjectSummary(project, projectConfig, status) {
   const bootstrap = projectConfig.bootstrap;
   console.log('');
-  console.log('=== Selected project ===');
-  console.log(`Name:        ${project.name}`);
-  console.log(`Status:      ${status}`);
-  console.log(`Project:     ${project.projectDir}`);
-  console.log(`State dir:   ${project.stateDir}`);
-  console.log(`Project doc: ${project.projectDoc}`);
-  console.log(`Config:      ${project.configFile}`);
-  console.log(`Bootstrap:   status=${bootstrap.status}, phase=${bootstrap.phase}, confirmed=${bootstrap.project_doc_confirmed}, config=${bootstrap.config_decision}`);
+  console.log(colorize('key', '=== Selected project ==='));
+  console.log(colorize('note', `Name:        ${project.name}`));
+  console.log(colorize('run', `Status:      ${status}`));
+  console.log(colorize('note', `Project:     ${project.projectDir}`));
+  console.log(colorize('note', `State dir:   ${project.stateDir}`));
+  console.log(colorize('note', `Project doc: ${project.projectDoc}`));
+  console.log(colorize('note', `Config:      ${project.configFile}`));
+  console.log(colorize('key', `Bootstrap:   status=${bootstrap.status}, phase=${bootstrap.phase}, confirmed=${bootstrap.project_doc_confirmed}, config=${bootstrap.config_decision}`));
   console.log('');
 }
 
 function printBootstrapLaunchResult(project, projectConfig, launched, reason) {
-  console.log('=== Bootstrap required ===');
-  console.log(`Reason:      ${reason}`);
-  console.log(`Project:     ${project.projectDir}`);
-  console.log(`Project doc: ${project.projectDoc}`);
-  console.log(`Config:      ${project.configFile}`);
-  console.log(`Bootstrap:   status=${projectConfig.bootstrap.status}, phase=${projectConfig.bootstrap.phase}`);
+  console.log(colorize('warn', '=== Bootstrap required ==='));
+  console.log(colorize('note', `Reason:      ${reason}`));
+  console.log(colorize('note', `Project:     ${project.projectDir}`));
+  console.log(colorize('note', `Project doc: ${project.projectDoc}`));
+  console.log(colorize('note', `Config:      ${project.configFile}`));
+  console.log(colorize('key', `Bootstrap:   status=${projectConfig.bootstrap.status}, phase=${projectConfig.bootstrap.phase}`));
   console.log('');
 
   if (launched) {
-    console.log('Opened Claude bootstrap window.');
-    console.log('Finish the five-stage Q&A there.');
-    console.log('After final confirmation, rerun AutoFish from this terminal.');
+    console.log(colorize('run', 'Opened Claude bootstrap window.'));
+    console.log(colorize('note', 'Finish the five-stage Q&A there.'));
+    console.log(colorize('note', 'After final confirmation, rerun AutoFish from this terminal.'));
   } else {
-    console.log('[ERROR] Failed to open Claude bootstrap window.');
-    console.log(`Bootstrap script: ${toPosixPath(path.join(project.stateDir, 'bootstrap-launch.ps1'))}`);
-    console.log('Run that script manually or fix terminal/permissions, then rerun AutoFish.');
+    console.log(colorize('error', '[ERROR] Failed to open Claude bootstrap window.'));
+    console.log(colorize('note', `Bootstrap script: ${toPosixPath(path.join(project.stateDir, 'bootstrap-launch.ps1'))}`));
+    console.log(colorize('note', 'Run that script manually or fix terminal/permissions, then rerun AutoFish.'));
   }
 
   console.log('');
@@ -751,7 +1083,7 @@ function normalizeInputPath(inputPath) {
 
   const resolved = normalizePath(stripped);
   if (!fs.existsSync(resolved)) {
-    console.log(`\n[PATH] Path not found -> ${resolved}\n`);
+    console.log(`\n${colorize('warn', `[PATH] Path not found -> ${resolved}`)}\n`);
     return null;
   }
 
@@ -781,6 +1113,31 @@ function padRight(value, length) {
 
 function psSingleQuote(value) {
   return String(value).replace(/'/g, "''");
+}
+
+function commandExists(command) {
+  const checker = process.platform === 'win32' ? 'where' : 'command';
+  const args = process.platform === 'win32' ? [command] : ['-v', command];
+  const result = spawnSync(checker, args, { encoding: 'utf8', windowsHide: true, shell: process.platform !== 'win32' });
+  return result.status === 0;
+}
+
+function buildColorPalette() {
+  const mode = process.env.NO_COLOR ? 'never' : (process.env.AUTOFISH_COLOR || 'auto');
+  const enabled = mode !== 'never';
+  const wrap = (code) => (text) => enabled ? `\x1b[${code}m${text}\x1b[0m` : text;
+  return {
+    note: wrap('90'),
+    run: wrap('33'),
+    key: wrap('96'),
+    warn: wrap('93'),
+    error: wrap('91'),
+  };
+}
+
+function colorize(kind, text) {
+  const painter = COLOR[kind] || ((value) => value);
+  return painter(String(text));
 }
 
 function ask(question) {
