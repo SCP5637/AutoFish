@@ -44,11 +44,17 @@ async function main() {
   saveRegistry(registry);
 
   if (!fs.existsSync(selection.projectDoc)) {
-    openBootstrapWindow(selection);
-    console.log('project.md missing -> opened Claude bootstrap window.');
-    console.log(`Target project: ${selection.projectDir}`);
-    console.log(`Target doc: ${selection.projectDoc}`);
-    console.log('Finish bootstrap in new window. Then rerun AutoFish.');
+    const launched = openBootstrapWindow(selection);
+    if (launched) {
+      console.log('project.md missing -> opened Claude bootstrap window.');
+      console.log(`Target project: ${selection.projectDir}`);
+      console.log(`Target doc: ${selection.projectDoc}`);
+      console.log('Finish bootstrap in new window. Then rerun AutoFish.');
+    } else {
+      console.log('[ERROR] Failed to open Claude bootstrap window.');
+      console.log(`Bootstrap script: ${toPosixPath(path.join(selection.stateDir, 'bootstrap-launch.ps1'))}`);
+      console.log('Run script manually or fix terminal/permissions, then rerun AutoFish.');
+    }
     return;
   }
 
@@ -353,19 +359,19 @@ function maybeOpenMonitorWindow(project) {
   const projectConfig = readJson(project.configFile, {});
   const showWindow = Boolean(projectConfig.display && projectConfig.display.show_cc_window);
   if (!showWindow) {
-    return;
+    return false;
   }
 
   const logFile = toPosixPath(path.join(project.runtimeDir, 'auto-log.txt'));
   const command = `Write-Host 'AutoFish CC Monitor' -ForegroundColor Cyan; Write-Host 'Close this window to stop monitoring (does not affect automation)' -ForegroundColor DarkYellow; Write-Host ''; if (-not (Test-Path '${psSingleQuote(logFile)}')) { New-Item -ItemType File -Path '${psSingleQuote(logFile)}' | Out-Null }; Get-Content '${psSingleQuote(logFile)}' -Wait -Tail 10`;
 
-  const child = spawn('powershell.exe', ['-NoExit', '-Command', command], {
-    detached: true,
-    stdio: 'ignore',
+  const result = spawnSync('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', command], {
+    cwd: project.projectDir,
+    env: process.env,
     windowsHide: false,
   });
 
-  child.unref();
+  return result.status === 0 && !result.error;
 }
 
 function openBootstrapWindow(project) {
@@ -373,16 +379,16 @@ function openBootstrapWindow(project) {
   const prompt = `${bootstrapSeed}\n## AutoFish runtime context\n\n- AUTOFISH_ROOT: ${project.root}\n- AUTOFISH_PROJECT_ID: ${project.id}\n- AUTOFISH_PROJECT_DIR: ${project.projectDir}\n- AUTOFISH_PROJECT_DOC: ${project.projectDoc}\n\n## Required first actions\n\n1. Read: ${toPosixPath(path.join(ROOT, 'PROJECT_SPEC.md'))}\n2. Read target project README / build config / test config / key entry files\n3. Talk with user until task scope is clear enough\n4. Use Write to create or update: ${project.projectDoc}\n\nDo not start code implementation. Stop after project.md is ready.\n`;
 
   const scriptPath = path.join(project.stateDir, 'bootstrap-launch.ps1');
-  const script = `$ErrorActionPreference = 'Stop'\n$prompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\n& claude -n 'AutoFish Bootstrap - ${psSingleQuote(project.name)}' $prompt\n`;
+  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = 'AutoFish Bootstrap - ${psSingleQuote(project.name)}'\n$bootstrapPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host 'Close this window after fixing PATH, then rerun AutoFish.' -ForegroundColor DarkYellow\n  return\n}\n& claude -n 'AutoFish Bootstrap - ${psSingleQuote(project.name)}' $bootstrapPrompt\nWrite-Host ''\nWrite-Host 'Bootstrap session ended. If project.md is ready, return to AutoFish and rerun.' -ForegroundColor DarkYellow\n`;
   fs.writeFileSync(scriptPath, script, 'utf8');
 
-  const child = spawn('powershell.exe', ['-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
-    detached: true,
-    stdio: 'ignore',
+  const result = spawnSync('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+    cwd: project.projectDir,
+    env: process.env,
     windowsHide: false,
   });
 
-  child.unref();
+  return result.status === 0 && !result.error;
 }
 
 function runLoop(project) {
