@@ -1,5 +1,5 @@
 {
-  "_comment": "AutoFish v2.0 配置文件。所有路径相对于项目根目录。",
+  "_comment": "AutoFish 根默认配置模板。项目运行态会复制到 state/projects/<id>/config.json。",
   "project_dir": "./",
   "max_turns_per_round": 50,
   "max_budget_per_round_usd": 5.00,
@@ -39,7 +39,7 @@
   "display": {
     "_comment": "显示选项。",
     "show_cc_window": false,
-    "show_cc_window_comment": "是否打开独立的 CC 输出监察窗口（不影响 stream-json 实时进度）",
+    "show_cc_window_comment": "是否打开独立的 CC 输出监察窗口（不影响实时进度）",
     "stream_realtime_progress": false,
     "stream_realtime_progress_comment": "是否使用 stream-json 实时输出 CC 进度到主终端"
   },
@@ -48,7 +48,7 @@
     "enabled": true,
     "enabled_comment": "是否启用校验。false = 跳过所有校验（不推荐）",
     "required_docs": ["project.md"],
-    "required_docs_comment": "必须存在的文档文件列表（相对于项目根目录或 .asdf/）",
+    "required_docs_comment": "必须存在的文档文件列表（相对于项目根目录或 state/）",
     "required_sections": ["技术栈", "任务清单"],
     "required_sections_comment": "project.md 中必须包含的章节标题（二级标题 ##）",
     "task_format": "- [ ]",

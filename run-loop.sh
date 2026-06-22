@@ -1,68 +1,101 @@
 #!/usr/bin/env bash
 # ============================================================
 #  run-loop.sh -- CC 自动滚动开发循环
-#  由 run-auto.bat 调用，不要直接双击此文件
+#  由 run-auto.bat 或 autofish.js 调用，不要直接双击此文件
 # ============================================================
 
 set -eo pipefail
 
-# Auto-detect project directory (script is in .asdf/, project is parent)
-# Override by setting AUTOFISH_PROJECT_DIR environment variable
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AUTOFISH_ROOT="${AUTOFISH_ROOT:-$SCRIPT_DIR}"
+PROJECT_ID="${AUTOFISH_PROJECT_ID:-legacy}"
+
 if [ -n "$AUTOFISH_PROJECT_DIR" ]; then
     PROJECT_DIR="$AUTOFISH_PROJECT_DIR"
 else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 fi
-CONFIG_FILE="$PROJECT_DIR/.asdf/config.json"
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
-# Read a value from config.json, fallback to default
+if [ -n "$AUTOFISH_STATE_DIR" ]; then
+    STATE_DIR="$AUTOFISH_STATE_DIR"
+    RUNTIME_DIR="${AUTOFISH_RUNTIME_DIR:-$STATE_DIR/runtime}"
+else
+    STATE_DIR="$PROJECT_DIR/.asdf"
+    RUNTIME_DIR="${AUTOFISH_RUNTIME_DIR:-$STATE_DIR}"
+fi
+
+ROOT_CONFIG_FILE="$AUTOFISH_ROOT/config.json"
+PROJECT_CONFIG_FILE="${AUTOFISH_PROJECT_CONFIG:-$STATE_DIR/config.json}"
+PROJECT_DOC_FILE="${AUTOFISH_PROJECT_DOC:-$STATE_DIR/project.md}"
+[ ! -f "$PROJECT_DOC_FILE" ] && [ -f "$PROJECT_DIR/project.md" ] && PROJECT_DOC_FILE="$PROJECT_DIR/project.md"
+
+PROMPT_TEMPLATE_FILE="${AUTOFISH_PROMPT_FILE:-$AUTOFISH_ROOT/auto-prompt.md}"
+LOG_FILE="${AUTOFISH_LOG_FILE:-$RUNTIME_DIR/auto-log.txt}"
+DONE_FILE="${AUTOFISH_DONE_FILE:-$RUNTIME_DIR/task-done.txt}"
+BLOCKED_FILE="${AUTOFISH_BLOCKED_FILE:-$RUNTIME_DIR/task-blocked.txt}"
+ROUND_FILE="${AUTOFISH_ROUND_FILE:-$RUNTIME_DIR/auto-round.txt}"
+WNTD_FILE="${AUTOFISH_WNTD_FILE:-$RUNTIME_DIR/WhatNeedToDo.md}"
+
 config_val() {
     local key="$1"
     local default="$2"
     local val
     val=$(node -e "
-        try {
-            const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));
-            const keys='$key'.split('.');
-            let v=c;
-            for(const k of keys) v=v&&v[k];
-            process.stdout.write(v!=null&&v!==''?String(v):'$default');
-        } catch(e) { process.stdout.write('$default'); }
-    " "$CONFIG_FILE" 2>/dev/null)
+        const fs=require('fs');
+        const key=process.argv[1];
+        const defaultVal=process.argv[2];
+        const files=process.argv.slice(3);
+        const keys=key.split('.');
+        function read(file){
+            try { return JSON.parse(fs.readFileSync(file,'utf8')); }
+            catch { return null; }
+        }
+        function get(obj){
+            let v=obj;
+            for (const k of keys) v=v&&v[k];
+            return v;
+        }
+        for (const file of files) {
+            if (!file) continue;
+            const data=read(file);
+            const value=data && get(data);
+            if (value !== undefined && value !== null && value !== '') {
+                process.stdout.write(String(value));
+                process.exit(0);
+            }
+        }
+        process.stdout.write(defaultVal);
+    " "$key" "$default" "$PROJECT_CONFIG_FILE" "$ROOT_CONFIG_FILE" 2>/dev/null)
     echo "$val"
 }
-
-# Override PROJECT_DIR from config if set to non-default value
-_config_dir=$(config_val "project_dir" "./")
-if [ "$_config_dir" != "./" ] && [ -n "$_config_dir" ]; then
-    PROJECT_DIR="$(cd "$_config_dir" && pwd)"
-    CONFIG_FILE="$PROJECT_DIR/.asdf/config.json"
-fi
-
-PROMPT_FILE="$PROJECT_DIR/.asdf/auto-prompt.md"
-LOG_FILE="$PROJECT_DIR/.asdf/auto-log.txt"
-DONE_FILE="$PROJECT_DIR/.asdf/task-done.txt"
-BLOCKED_FILE="$PROJECT_DIR/.asdf/task-blocked.txt"
-ROUND_FILE="$PROJECT_DIR/.asdf/auto-round.txt"
 
 MAX_TURNS=$(config_val "max_turns_per_round" "50")
 MAX_BUDGET=$(config_val "max_budget_per_round_usd" "5.00")
 MAX_ROUNDS=$(config_val "max_rounds" "200")
 SLEEP_SEC=$(config_val "sleep_between_rounds_sec" "5")
-STREAM_PROGRESS=$(config_val "display.stream_realtime_progress" "true")
+STREAM_PROGRESS=$(config_val "display.stream_realtime_progress" "false")
 
-# Session state
 SESSION_ACTIVE=false
 SESSION_ROUND_COUNT=0
 
+mkdir -p "$RUNTIME_DIR"
 cd "$PROJECT_DIR"
 
-# init — truncate without adding empty lines
-: > "$LOG_FILE"
-: > "$DONE_FILE"
-: > "$BLOCKED_FILE"
-echo "0" > "$ROUND_FILE"
+prepare_runtime_files() {
+    : > /dev/null
+    [ -f "$LOG_FILE" ] || : > "$LOG_FILE"
+    [ -f "$DONE_FILE" ] || : > "$DONE_FILE"
+    [ -f "$BLOCKED_FILE" ] || : > "$BLOCKED_FILE"
+    [ -f "$ROUND_FILE" ] || echo "0" > "$ROUND_FILE"
+}
+
+reset_run_state() {
+    : > "$LOG_FILE"
+    : > "$DONE_FILE"
+    : > "$BLOCKED_FILE"
+    echo "0" > "$ROUND_FILE"
+}
 
 log() {
     local msg="[$(date '+%H:%M:%S')] $*"
@@ -76,7 +109,23 @@ log_sep() {
     echo "$sep" >> "$LOG_FILE"
 }
 
-# ========== plugin checks ==========
+build_runtime_context() {
+    cat <<EOF
+AutoFish runtime context:
+- Project id: $PROJECT_ID
+- Project root: $PROJECT_DIR
+- Project config: $PROJECT_CONFIG_FILE
+- Project doc: $PROJECT_DOC_FILE
+- Runtime dir: $RUNTIME_DIR
+- Done file: $DONE_FILE
+- Blocked file: $BLOCKED_FILE
+- Log file: $LOG_FILE
+- WhatNeedToDo file: $WNTD_FILE
+- PROJECT_SPEC.md: $AUTOFISH_ROOT/PROJECT_SPEC.md
+Use these exact paths. Do not guess .asdf paths.
+EOF
+}
+
 check_single_plugin() {
     local plugin="$1"
     case "$plugin" in
@@ -108,12 +157,21 @@ check_plugins() {
     check_enabled=$(config_val "plugins.check_on_startup" "true")
     [ "$check_enabled" != "true" ] && return 0
 
-    # Check required plugins (missing = fatal)
     local required
     required=$(node -e "
-        try{JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'))
-            .plugins.required.forEach(function(p){console.log(p)});
-        }catch(e){}" 2>/dev/null)
+        try {
+            const fs=require('fs');
+            const files=process.argv.slice(1);
+            function read(file){ try { return JSON.parse(fs.readFileSync(file,'utf8')); } catch { return null; } }
+            for (const file of files) {
+                const data=read(file);
+                if (data && data.plugins && Array.isArray(data.plugins.required)) {
+                    data.plugins.required.forEach((item)=>console.log(item));
+                    process.exit(0);
+                }
+            }
+        } catch {}
+    " "$PROJECT_CONFIG_FILE" "$ROOT_CONFIG_FILE" 2>/dev/null)
 
     for plugin in $required; do
         [ -z "$plugin" ] && continue
@@ -124,12 +182,21 @@ check_plugins() {
         log "[PLUGIN] $plugin: installed (required)"
     done
 
-    # Check optional plugins (missing = warning)
     local optional
     optional=$(node -e "
-        try{JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'))
-            .plugins.optional.forEach(function(p){console.log(p)});
-        }catch(e){}" 2>/dev/null)
+        try {
+            const fs=require('fs');
+            const files=process.argv.slice(1);
+            function read(file){ try { return JSON.parse(fs.readFileSync(file,'utf8')); } catch { return null; } }
+            for (const file of files) {
+                const data=read(file);
+                if (data && data.plugins && Array.isArray(data.plugins.optional)) {
+                    data.plugins.optional.forEach((item)=>console.log(item));
+                    process.exit(0);
+                }
+            }
+        } catch {}
+    " "$PROJECT_CONFIG_FILE" "$ROOT_CONFIG_FILE" 2>/dev/null)
 
     for plugin in $optional; do
         [ -z "$plugin" ] && continue
@@ -150,10 +217,63 @@ check_plugins() {
     return 0
 }
 
-# ========== safety checks ==========
+validate_project_doc() {
+    local enabled
+    enabled=$(config_val "project_validation.enabled" "true")
+    [ "$enabled" != "true" ] && return 0
+
+    if [ ! -f "$PROJECT_DOC_FILE" ]; then
+        log "[FATAL] project.md not found at $PROJECT_DOC_FILE"
+        log "  Create project.md with required sections and - [ ] tasks"
+        return 1
+    fi
+
+    local sections
+    sections=$(node -e "
+        try {
+            const fs=require('fs');
+            const files=process.argv.slice(1);
+            function read(file){ try { return JSON.parse(fs.readFileSync(file,'utf8')); } catch { return null; } }
+            for (const file of files) {
+                const data=read(file);
+                const sections=data?.project_validation?.required_sections;
+                if (Array.isArray(sections) && sections.length) {
+                    sections.forEach((item)=>console.log(item));
+                    process.exit(0);
+                }
+            }
+        } catch {}
+        console.log('技术栈');
+        console.log('任务清单');
+    " "$PROJECT_CONFIG_FILE" "$ROOT_CONFIG_FILE" 2>/dev/null)
+
+    local missing_sections=""
+    while IFS= read -r section; do
+        [ -z "$section" ] && continue
+        if ! grep -q "^## $section" "$PROJECT_DOC_FILE" 2>/dev/null; then
+            missing_sections="$missing_sections  $section"
+        fi
+    done <<< "$sections"
+
+    if [ -n "$missing_sections" ]; then
+        log "[FATAL] project.md missing required sections:$missing_sections"
+        return 1
+    fi
+
+    local task_format
+    task_format=$(config_val "project_validation.task_format" "- [ ]")
+    if ! grep -qF -e "$task_format" "$PROJECT_DOC_FILE"; then
+        log "[FATAL] No tasks found in project.md (format: '$task_format')"
+        return 1
+    fi
+
+    log "project.md validation: PASSED"
+    return 0
+}
+
 check_safety() {
-    if [ ! -d "$PROJECT_DIR/.git" ]; then
-        log "[FATAL] .git not found"
+    if ! git -C "$PROJECT_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
+        log "[FATAL] git project not found at $PROJECT_DIR"
         return 1
     fi
     if ! command -v claude &>/dev/null; then
@@ -166,8 +286,8 @@ check_safety() {
     if ! check_plugins; then
         return 1
     fi
-    if [ ! -f "$PROMPT_FILE" ]; then
-        log "[FATAL] auto-prompt.md not found"
+    if [ ! -f "$PROMPT_TEMPLATE_FILE" ]; then
+        log "[FATAL] auto-prompt.md not found at $PROMPT_TEMPLATE_FILE"
         return 1
     fi
     if ! validate_project_doc; then
@@ -176,55 +296,6 @@ check_safety() {
     return 0
 }
 
-# ========== project.md validation ==========
-validate_project_doc() {
-    local enabled
-    enabled=$(config_val "project_validation.enabled" "true")
-    [ "$enabled" != "true" ] && return 0
-
-    # Find project.md: try .asdf/ first, then root
-    local doc_file="${PROJECT_DIR}/.asdf/project.md"
-    [ ! -f "$doc_file" ] && doc_file="${PROJECT_DIR}/project.md"
-
-    if [ ! -f "$doc_file" ]; then
-        log "[FATAL] project.md not found at ${PROJECT_DIR}/.asdf/project.md or ${PROJECT_DIR}/project.md"
-        log "  Create .asdf/project.md with required sections and - [ ] tasks"
-        return 1
-    fi
-
-    # Check required sections
-    local sections
-    sections=$(node -e "
-        try{const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'));
-        const s=c.project_validation?.required_sections||['技术栈','任务清单'];
-        s.forEach(function(x){console.log(x)});}catch(e){console.log('技术栈');console.log('任务清单');}" 2>/dev/null)
-
-    local missing_sections=""
-    while IFS= read -r section; do
-        [ -z "$section" ] && continue
-        if ! grep -q "^## $section" "$doc_file" 2>/dev/null; then
-            missing_sections="$missing_sections  $section"
-        fi
-    done <<< "$sections"
-
-    if [ -n "$missing_sections" ]; then
-        log "[FATAL] project.md missing required sections:$missing_sections"
-        return 1
-    fi
-
-    # Check task format
-    local task_format
-    task_format=$(config_val "project_validation.task_format" "- [ ]")
-    if ! grep -qF -e "$task_format" "$doc_file"; then
-        log "[FATAL] No tasks found in project.md (format: '$task_format')"
-        return 1
-    fi
-
-    log "project.md validation: PASSED"
-    return 0
-}
-
-# ========== git checkpoint ==========
 make_checkpoint() {
     git add -A 2>/dev/null || true
     if ! git diff --cached --quiet 2>/dev/null; then
@@ -237,7 +308,6 @@ make_checkpoint() {
     fi
 }
 
-# ========== round checkpoint (smart, with descriptive message) ==========
 make_round_checkpoint() {
     local round="$1"
     local enabled
@@ -250,10 +320,8 @@ make_round_checkpoint() {
         return 0
     fi
 
-    # Build descriptive message from recently completed tasks
     local msg=""
     if [ -f "$DONE_FILE" ]; then
-        # Take last 3 done entries for the commit message
         local latest
         latest=$(tail -3 "$DONE_FILE" 2>/dev/null | grep -oP '\]\s+\K.+?(?=\s*—|\s*$)' 2>/dev/null || \
                  tail -3 "$DONE_FILE" 2>/dev/null | sed 's/.*\] //; s/ —.*//; s/PROGRESS: //; s/SESSION_RESET//')
@@ -262,10 +330,7 @@ make_round_checkpoint() {
         fi
     fi
 
-    if [ -z "$msg" ]; then
-        msg="round $round checkpoint"
-    fi
-
+    [ -z "$msg" ] && msg="round $round checkpoint"
     msg="autofish(r$round): $msg"
 
     git add -A 2>/dev/null || true
@@ -275,7 +340,6 @@ make_round_checkpoint() {
     fi
 }
 
-# ========== stop conditions ==========
 check_stop_conditions() {
     local round="$1"
 
@@ -294,7 +358,6 @@ check_stop_conditions() {
         return
     fi
 
-    # Check runtime limits
     local runtime_result
     runtime_result=$(check_runtime_limit)
     case "$runtime_result" in
@@ -307,7 +370,6 @@ check_stop_conditions() {
     echo "CONTINUE"
 }
 
-# ========== runtime limit ==========
 check_runtime_limit() {
     if [ -n "$MAX_DURATION_MIN" ]; then
         local now
@@ -333,13 +395,11 @@ check_runtime_limit() {
     echo "CONTINUE"
 }
 
-# ========== session rebuild helpers ==========
 check_context_ratio() {
     local threshold
     threshold=$(config_val "session.rebuild_strategy.context_ratio_threshold" "")
     [ -z "$threshold" ] && return 1
 
-    # Estimate: accumulated turns vs safe threshold for 200K context window
     local accumulated_turns=$((SESSION_ROUND_COUNT * MAX_TURNS))
     local safe_turns_by_ratio
     safe_turns_by_ratio=$(node -e "console.log(Math.floor(250 * $threshold))" 2>/dev/null || echo "160")
@@ -377,7 +437,6 @@ should_rebuild_session() {
 
     case "$mode" in
         all)
-            # All enabled conditions must be satisfied; disabled conditions are skipped
             local any_enabled=false
             [ -n "$every_n" ] && any_enabled=true
             local ratio_thresh
@@ -402,7 +461,6 @@ should_rebuild_session() {
     return 1
 }
 
-# ========== run one CC round ==========
 run_cc_round() {
     local round="$1"
     local tmp_log
@@ -414,10 +472,11 @@ run_cc_round() {
     log "Round $round start"
 
     local exit_code=0
-
     local prompt_text
-    prompt_text=$(cat "$PROMPT_FILE")
-    log "Prompt: ${#prompt_text} chars from $PROMPT_FILE"
+    prompt_text="$(build_runtime_context)
+
+$(cat "$PROMPT_TEMPLATE_FILE")"
+    log "Prompt: ${#prompt_text} chars from $PROMPT_TEMPLATE_FILE"
 
     local continue_flag=""
     if [ "$SESSION_ACTIVE" = true ]; then
@@ -427,13 +486,10 @@ run_cc_round() {
         log "Round $round: starting fresh session"
     fi
 
-    # Cache optimization: exclude dynamic sections from system prompt
     local cache_flag="--exclude-dynamic-system-prompt-sections"
-
-    local progress_filter="${SCRIPT_DIR}/progress-filter.js"
+    local progress_filter="$AUTOFISH_ROOT/progress-filter.js"
 
     if [ "$STREAM_PROGRESS" = true ] && [ -f "$progress_filter" ]; then
-        # Stream mode with clean progress filter
         log "Mode: stream (filter: $progress_filter)"
         claude -p "$prompt_text" \
             $continue_flag \
@@ -447,14 +503,12 @@ run_cc_round() {
             2>"$tmp_err" | node "$progress_filter" 2>/dev/null | tee -a "$LOG_FILE" \
             || exit_code=$?
     else
-        # Non-stream mode with spinner indicator
         log "Mode: text (stream=$STREAM_PROGRESS, filter_exists=$([ -f "$progress_filter" ] && echo yes || echo no))"
         local spin_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         local spin_idx=0
         local start_ts
         start_ts=$(date +%s)
 
-        # Launch CC in background
         claude -p "$prompt_text" \
             $continue_flag \
             $cache_flag \
@@ -465,7 +519,6 @@ run_cc_round() {
         local cc_pid=$!
         log "CC PID: $cc_pid"
 
-        # Spinner overlay while CC runs
         while kill -0 $cc_pid 2>/dev/null; do
             local now_ts
             now_ts=$(date +%s)
@@ -477,7 +530,7 @@ run_cc_round() {
             printf "\r  %s [%02d:%02d] CC 工作中..." "$spin" "$min" "$sec"
             sleep 0.3
         done
-        printf "\r\x1b[K"  # Clear spinner line
+        printf "\r\x1b[K"
 
         wait $cc_pid || exit_code=$?
 
@@ -485,7 +538,6 @@ run_cc_round() {
         cat "$tmp_log"
     fi
 
-    # Diagnostic: show stderr if CC failed
     if [ "$exit_code" -ne 0 ]; then
         local err_size
         err_size=$(wc -c < "$tmp_err" 2>/dev/null | tr -d '[:space:]')
@@ -501,77 +553,36 @@ run_cc_round() {
     return $exit_code
 }
 
-# ========== WhatNeedToDo handling ==========
-WNTD_FILE="${PROJECT_DIR}/.asdf/WhatNeedToDo.md"
-
 generate_what_need_to_do() {
     log "Generating WhatNeedToDo.md (checklist format)..."
 
     local summary_prompt
-    summary_prompt=$(cat << 'PROMPT_EOF'
-你是一个项目状态总结助手。AutoFish 在自动执行过程中遇到了阻塞，需要你来分析并生成一份**交互式**处理指南。
+    summary_prompt=$(cat <<EOF
+你是一个项目状态总结助手。AutoFish 在自动执行过程中遇到了阻塞，需要你来分析并生成一份交互式处理指南。
 
-## 关键要求：使用 checkbox 清单格式
+关键文件路径：
+- 项目文档：$PROJECT_DOC_FILE
+- 已完成任务：$DONE_FILE
+- 阻塞任务：$BLOCKED_FILE
+- 运行日志：$LOG_FILE
+- 输出文件：$WNTD_FILE
 
-你必须使用 `- [ ]` 格式列出每个阻塞项。这样用户可以在处理完后将 `- [ ]` 改为 `- [x]`，下次 AutoFish 启动时会自动识别。
-
-## 工作步骤
-
-1. 阅读 `.asdf/project.md` — 项目任务清单
-2. 阅读 `.asdf/task-done.txt` — 已完成任务
-3. 阅读 `.asdf/task-blocked.txt` — 阻塞任务
-4. 阅读 `.asdf/auto-log.txt` 最后50行 — 了解上下文
-
-5. 使用 Write 工具创建 `.asdf/WhatNeedToDo.md`，严格按此格式：
-
-```markdown
-# AutoFish 阻塞处理指南
-
-> 生成时间：[当前时间]
-> 处理状态：0/N 已解决
-> AutoFish 在自动执行过程中遇到需要人工介入的问题，已自动暂停。
-
-## 阻塞概览
-[2-3句话概括]
-
-## 阻塞任务清单（逐个处理，处理完打勾）
-
-- [ ] **任务名1**
-  - **阻塞原因**：XXX
-  - **你需要做什么**：具体的操作步骤（改哪个文件、做什么决策）
-  - **备选方案**（如是设计决策）：A. XXX B. XXX → 推荐：XXX
-  - **用户反馈**：（在此写下你的决定/说明）
-
-- [ ] **任务名2**
-  - **阻塞原因**：XXX
-  - **你需要做什么**：XXX
-  - **用户反馈**：（在此写下你的决定/说明）
-
-## 已完成任务（本轮自动完成）
-[从 task-done.txt 列出]
-
-## 待执行任务（阻塞解除后自动继续）
-[从 project.md 列出尚未开始的 - [ ] 任务]
-
-## 用户反馈区
-> 在此区域写任何补充说明、全局决策、方案选择。
-> 你的文字会被保留，不会被 AutoFish 覆盖。
-
-## 处理指南
-
-1. 处理上面列出的每个 `- [ ]` 阻塞项
-2. 处理完后将 `- [ ]` 改为 `- [x]`
-3. 在"用户反馈"行写下你的解决方案/决定
-4. 重新双击 `run-auto.bat` 启动 AutoFish
-5. AutoFish 会识别你的处理结果并自动继续
-```
-
-## 注意
-- 中文
-- 每个阻塞项必须是 `- [ ]` 开头（这是关键的交互格式）
-- 每个阻塞项下必须有"用户反馈："行供用户填写
-- 信息要具体可操作
-PROMPT_EOF
+要求：
+1. 阅读上面列出的文件。
+2. 使用 Write 工具创建 `$WNTD_FILE`。
+3. 每个阻塞项必须使用 `- [ ]` checkbox。
+4. 每项下必须包含：
+   - 阻塞原因
+   - 你需要做什么
+   - 用户反馈
+5. 文档需包含：
+   - 阻塞概览
+   - 阻塞任务清单
+   - 已完成任务
+   - 待执行任务
+   - 用户反馈区
+6. 中文，具体，可操作。
+EOF
 )
 
     claude -p "$summary_prompt" \
@@ -584,7 +595,7 @@ PROMPT_EOF
         log "WhatNeedToDo.md generated: $WNTD_FILE"
     else
         log "[WARN] CC did not create WhatNeedToDo.md, generating fallback..."
-        cat > "$WNTD_FILE" << FALLBACK_EOF
+        cat > "$WNTD_FILE" <<EOF
 # AutoFish 阻塞处理指南
 
 > 生成时间：$(date '+%Y-%m-%d %H:%M')
@@ -601,7 +612,7 @@ $(cat "$DONE_FILE" 2>/dev/null || echo "无记录")
 ## 处理完成后
 
 重新运行 AutoFish。脚本会自动检测阻塞是否已解决。
-FALLBACK_EOF
+EOF
         log "Fallback WhatNeedToDo.md created"
     fi
 }
@@ -610,37 +621,21 @@ update_what_need_to_do() {
     log "Updating WhatNeedToDo.md (preserving user input)..."
 
     local update_prompt
-    update_prompt=$(cat << 'PROMPT_EOF'
-你是一个项目状态更新助手。用户已阅读 WhatNeedToDo.md 并对部分阻塞项做了处理（标记 `- [x]`、写了反馈）。
+    update_prompt=$(cat <<EOF
+你是一个项目状态更新助手。用户已处理部分阻塞项，请增量更新文档。
 
-## 关键原则：增量更新，绝不覆盖用户内容
+关键文件路径：
+- WhatNeedToDo：$WNTD_FILE
+- 阻塞任务：$BLOCKED_FILE
+- 项目文档：$PROJECT_DOC_FILE
 
-1. **必须保留**所有用户标记的 `- [x]` 项及其下方用户写的全部内容
-2. **必须保留**"用户反馈区"中用户写的所有文字
-3. **只更新**仍然为 `- [ ]` 的项：检查其阻塞状态是否发生变化
-4. **不要重写整个文档**。只改变化的部分
-
-## 工作步骤
-
-1. 阅读 `.asdf/WhatNeedToDo.md` — 了解用户已处理了什么
-2. 阅读 `.asdf/task-blocked.txt` — 检查阻塞状态是否有变化
-3. 阅读 `.asdf/project.md` — 确认任务状态
-
-4. 更新 WhatNeedToDo.md：
-   - 如果某个 `- [ ]` 实际上已经被用户用其他方式解决了：改为 `- [x]` 并简短说明
-   - 如果有新的阻塞出现（之前文档没列出的）：追加 `- [ ]` 项
-   - 如果某个阻塞原因已过时：更新原因描述
-   - 更新"处理状态"计数：X/N 已解决
-   - 更新"生成时间"
-   - **用户写的任何内容都保留不动**
-
-5. 如果用户通过"用户反馈区"给出了全局决策（如"全部用方案A"），据此更新各阻塞项
-
-## 注意
-- 不要删除用户文字
-- 不要重新生成整个文档
-- 更新完仍然有 `- [ ]` 项是正常的（用户还需要处理）
-PROMPT_EOF
+原则：
+1. 保留所有用户已写内容。
+2. 只更新仍然需要处理的阻塞项。
+3. 如果某项已通过用户反馈解决，可改成 `- [x]`。
+4. 如果有新阻塞，可追加新项。
+5. 不要重写整个文档。
+EOF
 )
 
     claude -p "$update_prompt" \
@@ -659,8 +654,6 @@ handle_what_need_to_do() {
 
     log "Found existing WhatNeedToDo.md, analyzing user interaction..."
 
-    # Extract only the "阻塞任务清单" section to avoid counting
-    # items from "待执行任务" section or code-block examples
     local section
     section=$(sed -n '/^## 阻塞任务清单/,/^## /p' "$WNTD_FILE" 2>/dev/null)
 
@@ -671,19 +664,16 @@ handle_what_need_to_do() {
 
     log "Blocked items in WNTD: $resolved resolved, $unresolved remaining"
 
-    # Case 1: All blocked items resolved → integrate and continue execution
     if [ "$unresolved" -eq 0 ] && [ "$resolved" -gt 0 ]; then
         log "All blocked items resolved by user, continuing execution..."
         rm -f "$WNTD_FILE"
         return 0
     fi
 
-    # Case 2: User has interacted (some [x]) → CC updates the doc preserving user input
     if [ "$resolved" -gt 0 ]; then
         log "User resolved $resolved item(s), updating document via CC..."
         update_what_need_to_do
 
-        # RE-CHECK after CC update — CC may have resolved remaining items
         local new_section
         new_section=$(sed -n '/^## 阻塞任务清单/,/^## /p' "$WNTD_FILE" 2>/dev/null)
         local new_unresolved
@@ -699,7 +689,6 @@ handle_what_need_to_do() {
         exit 0
     fi
 
-    # Case 3: No [x] items yet — user hasn't interacted with the checklist
     local has_blocked=false
     if [ -f "$BLOCKED_FILE" ] && [ -s "$BLOCKED_FILE" ]; then
         local blocked_items
@@ -714,19 +703,24 @@ handle_what_need_to_do() {
         log "Edit: $WNTD_FILE (mark resolved as - [x], add notes), then restart."
         exit 0
     else
-        log "No active blocks found, removing WNTD and continuing..."
-        rm -f "$WNTD_FILE"
-        return 0
+        log "WNTD exists but no active blocked entries found. Keep file for manual review: $WNTD_FILE"
+        exit 0
     fi
 }
 
-# ========== main ==========
 main() {
+    prepare_runtime_files
+    handle_what_need_to_do
+    reset_run_state
+
     log_sep
     log "Autonomous dev loop started"
-    log "Project: $PROJECT_DIR"
+    log "Project id: $PROJECT_ID"
+    log "Project root: $PROJECT_DIR"
+    log "Project doc: $PROJECT_DOC_FILE"
+    log "Runtime dir: $RUNTIME_DIR"
     log "Permission: auto | Max turns/round: $MAX_TURNS | Max budget/round: \$$MAX_BUDGET"
-    log "Max rounds: $MAX_ROUNDS | Sleep: ${SLEEP_SEC}s | Duration limit: ${MAX_DURATION_MIN:-none} | Stop at: ${STOP_AT:-none}"
+    log "Max rounds: $MAX_ROUNDS | Sleep: ${SLEEP_SEC}s"
     log_sep
 
     if ! check_safety; then
@@ -734,12 +728,8 @@ main() {
         exit 1
     fi
 
-    # Check if previous block was resolved by human
-    handle_what_need_to_do
-
     make_checkpoint
 
-    # Runtime limit tracking
     local START_TIMESTAMP
     START_TIMESTAMP=$(date +%s)
     local MAX_DURATION_MIN
@@ -750,27 +740,27 @@ main() {
     local round=1
     local last_done_lines=0
     local stale_count=0
+    local stop_reason="CONTINUE"
 
     while true; do
         echo "$round" > "$ROUND_FILE"
 
-        # Check for session rebuild before starting round
         if should_rebuild_session; then
             log "Session rebuild triggered"
             SESSION_ACTIVE=false
             SESSION_ROUND_COUNT=0
-            # Clean up SESSION_RESET marker so it doesn't re-trigger
             sed -i '/SESSION_RESET/d' "$DONE_FILE" 2>/dev/null || true
         fi
 
-        run_cc_round "$round" || true
-        local round_exit=$?
+        local round_exit=0
+        if run_cc_round "$round"; then
+            round_exit=0
+        else
+            round_exit=$?
+        fi
 
-        # Smart checkpoint after each round (interval configurable)
         make_round_checkpoint "$round"
 
-        # Only continue session if round was successful (exit=0)
-        # Failed rounds mean CC couldn't work — continuing them is useless
         if [ "$round_exit" -eq 0 ]; then
             SESSION_ACTIVE=true
             SESSION_ROUND_COUNT=$((SESSION_ROUND_COUNT + 1))
@@ -780,7 +770,6 @@ main() {
             SESSION_ROUND_COUNT=0
         fi
 
-        local stop_reason
         stop_reason=$(check_stop_conditions "$round")
 
         case "$stop_reason" in

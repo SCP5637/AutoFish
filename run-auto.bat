@@ -1,17 +1,12 @@
 @echo off
 setlocal
 
-:: TideStone Auto-Dev Launcher
-:: Double-click this file to start autonomous CC development loop.
-:: Must have Git for Windows (bash) and Claude Code installed.
+:: AutoFish launcher from central root directory.
+:: Must have Claude Code, Node.js, and Git for Windows (bash).
 
-:: Auto-detect: script is in .asdf/, project is parent
-set "SCRIPT_DIR=%~dp0"
-for %%A in ("%SCRIPT_DIR%..") do set "PROJECT_DIR=%%~fA"
+set "AUTOFISH_ROOT=%~dp0"
+cd /d "%AUTOFISH_ROOT%"
 
-cd /d "%PROJECT_DIR%"
-
-:: Check Claude Code (before bash detection)
 where claude >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Claude Code CLI not found.
@@ -23,7 +18,15 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo Claude Code: found
 
-:: Find bash (try multiple known locations)
+where node >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Node.js not found.
+    echo   Install Node.js and verify: node --version
+    pause
+    exit /b 1
+)
+echo Node.js: found
+
 set "BASH="
 for %%d in (
     "C:\Program Files\Git\bin"
@@ -34,7 +37,6 @@ for %%d in (
 ) do (
     if exist "%%~d\bash.exe" set "BASH=%%~d\bash.exe"
 )
-:: Also check PATH
 if "%BASH%"=="" (
     where bash >nul 2>&1 && set "BASH=bash"
 )
@@ -49,66 +51,64 @@ if "%BASH%"=="" (
 )
 echo Found bash: %BASH%
 
-:: Inject Git usr/bin into PATH so bash can find date/cat/rm/sleep/mktemp
 for %%f in ("%BASH%") do set "GIT_USR_BIN=%%~dpf"
 if exist "%GIT_USR_BIN%date.exe" (
     set "PATH=%GIT_USR_BIN%;%PATH%"
     echo Added to PATH: %GIT_USR_BIN%
 )
 
-:: Also add mingw64/bin for gcc
 set "MINGW_BIN=C:\Users\A\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.MSVCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
 if exist "%MINGW_BIN%\gcc.exe" (
     set "PATH=%MINGW_BIN%;%PATH%"
     echo Added to PATH: mingw64 gcc
 )
 
-:: Check run-loop.sh
-if not exist "%SCRIPT_DIR%\run-loop.sh" (
-    echo [ERROR] run-loop.sh not found in %SCRIPT_DIR%
+if not exist "%AUTOFISH_ROOT%run-loop.sh" (
+    echo [ERROR] run-loop.sh not found in %AUTOFISH_ROOT%
     pause
     exit /b 1
 )
-
-:: Check auto-prompt.md
-if not exist "%SCRIPT_DIR%\auto-prompt.md" (
-    echo [ERROR] auto-prompt.md not found in %SCRIPT_DIR%
+if not exist "%AUTOFISH_ROOT%auto-prompt.md" (
+    echo [ERROR] auto-prompt.md not found in %AUTOFISH_ROOT%
+    pause
+    exit /b 1
+)
+if not exist "%AUTOFISH_ROOT%config.json" (
+    echo [ERROR] config.json not found in %AUTOFISH_ROOT%
+    pause
+    exit /b 1
+)
+if not exist "%AUTOFISH_ROOT%PROJECT_SPEC.md" (
+    echo [ERROR] PROJECT_SPEC.md not found in %AUTOFISH_ROOT%
+    pause
+    exit /b 1
+)
+if not exist "%AUTOFISH_ROOT%bootstrap-seed.md" (
+    echo [ERROR] bootstrap-seed.md not found in %AUTOFISH_ROOT%
+    pause
+    exit /b 1
+)
+if not exist "%AUTOFISH_ROOT%autofish.js" (
+    echo [ERROR] autofish.js not found in %AUTOFISH_ROOT%
     pause
     exit /b 1
 )
 
 echo.
 echo ============================================================
-echo   TideStone - Autonomous Dev Mode
-echo   Project: %PROJECT_DIR%
+echo   AutoFish - Multi Project Control
+echo   Root: %AUTOFISH_ROOT%
 echo   Started: %date% %time%
-echo   Press Ctrl+C to stop at any time
 echo ============================================================
 echo.
 
-:: Check config for CC monitor window
-set "SHOW_CC_WINDOW=0"
-if exist "%SCRIPT_DIR%\config.json" (
-    node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(c.display&&c.display.show_cc_window?'1':'0');}catch(e){process.stdout.write('0');}" "%SCRIPT_DIR%\config.json" > "%TEMP%\af_cc_win.txt" 2>nul
-    if exist "%TEMP%\af_cc_win.txt" (
-        set /p SHOW_CC_WINDOW=<"%TEMP%\af_cc_win.txt"
-        del "%TEMP%\af_cc_win.txt" 2>nul
-    )
-)
-
-if "%SHOW_CC_WINDOW%"=="1" (
-    echo Opening CC monitor window...
-    start "AutoFish - CC Monitor" powershell -NoExit -Command "Write-Host 'AutoFish CC Monitor' -ForegroundColor Cyan; Write-Host 'Close this window to stop monitoring (does not affect automation)' -ForegroundColor DarkYellow; Write-Host ''; Get-Content '%SCRIPT_DIR%\auto-log.txt' -Wait -Tail 10"
-)
-
-:: Hand off to bash loop script
-"%BASH%" "%SCRIPT_DIR%/run-loop.sh"
+set "AUTOFISH_BASH=%BASH%"
+node "%AUTOFISH_ROOT%autofish.js"
+set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
-echo Autonomous session ended.
-echo   Done tasks:    type "%SCRIPT_DIR%\task-done.txt"
-echo   Blocked tasks: type "%SCRIPT_DIR%\task-blocked.txt"
-echo   Full log:      type "%SCRIPT_DIR%\auto-log.txt"
+echo AutoFish session ended. Exit code: %EXIT_CODE%
 echo.
 pause
 endlocal
+exit /b %EXIT_CODE%

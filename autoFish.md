@@ -25,7 +25,7 @@
 
 AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系统。
 
-核心思路：一个 `.bat` 双击启动 → 外层 `while` 循环 → 每轮启动一个新的 CC 非交互会话 → CC 读取 `project.md` 的任务清单逐项完成 → 会话结束 → 自动开始下一轮 → 直到所有任务完成或需要人工介入时停止。
+核心思路：一个根目录启动器双击启动 → 菜单选择项目 → 外层 `while` 循环 → 每轮启动一个新的 CC 非交互会话 → CC 读取集中式 `project.md` 逐项完成 → 会话结束 → 自动开始下一轮 → 直到所有任务完成或需要人工介入时停止。
 
 **实战验证**：2026-05-25 凌晨，AutoFish 在 SokobanLike 项目中连续运行 8 轮（约 1.5 小时），自动完成了 **C0.2 到 C2.8 共 19 个子阶段**的全部代码实现，包括：
 - 四方向移动 + 撞墙检测 + 动画
@@ -73,13 +73,13 @@ AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系
 │  └────────────────────────────────────────────────────┘  │
 │                                                          │
 │  ┌────────────────────────────────────────────────────┐  │
-│  │                  .asdf/ 运行时文件                   │  │
-│  │  config.json    ← v2.0 新增：所有配置集中管理        │  │
-│  │  project.md     ← 任务清单（CC 每轮读取）            │  │
-│  │  auto-prompt.md ← 任务指令（CC 每轮读取）            │  │
-│  │  auto-log.txt   ← 完整运行日志                       │  │
-│  │  task-done.txt  ← 已完成 + SESSION_RESET 信号       │  │
-│  │  task-blocked.txt ← 阻塞项                           │  │
+│  │               state/projects/<project-id>/              │  │
+│  │  config.json    ← 每项目运行配置                        │  │
+│  │  project.md     ← 任务清单（CC 每轮读取）              │  │
+│  │  runtime/       ← 本项目运行状态目录                   │  │
+│  │    auto-log.txt ← 完整运行日志                         │  │
+│  │    task-done.txt ← 已完成 + SESSION_RESET 信号         │  │
+│  │    task-blocked.txt ← 阻塞项                           │  │
 │  └────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -100,34 +100,39 @@ AutoFish 是一套让 Claude Code **无人值守自动滚动开发**的脚本系
 ├── run-auto.bat              ← 源文件：Windows 启动器
 ├── run-loop.sh               ← 源文件：bash 循环引擎
 ├── auto-prompt.md            ← 源文件：通用任务提示模板
+├── bootstrap-seed.md         ← 源文件：新项目 bootstrap 提示
 ├── autoFish.md               ← 源文件：用户手册（本文件）
 ├── PROJECT_SPEC.md           ← 源文件：project.md 格式规范
-├── FLUTTER_RESEARCH.md       ← 源文件：Flutter 桌面应用调研
-└── .asdf/                    ← 部署目录（gitignored）
-    ├── config.json           ← v2.0 新增：运行时配置文件
-    ├── run-auto.bat          ← 部署副本
-    ├── run-loop.sh           ← 部署副本
-    ├── auto-prompt.md        ← 部署副本
-    ├── project.md            ← 项目主文档（含任务清单 - [ ] 勾选项）
-    ├── auto-log.txt          ← 自动生成：完整运行日志
-    ├── task-done.txt         ← 自动生成：已完成任务列表
-    ├── task-blocked.txt      ← 自动生成：阻塞项列表
-    └── auto-round.txt        ← 自动生成：当前轮数
+├── autofish.js               ← 源文件：项目菜单/注册表/路径控制器
+└── state/                    ← 运行态目录（gitignored）
+    └── projects/
+        └── <project-id>/
+            ├── config.json    ← 每项目运行配置
+            ├── project.md     ← 项目主文档（含任务清单 - [ ] 勾选项）
+            └── runtime/
+                ├── auto-log.txt
+                ├── task-done.txt
+                ├── task-blocked.txt
+                ├── auto-round.txt
+                └── WhatNeedToDo.md
 ```
 
 **核心文件的关系**：
 
 | 文件 | 谁读 | 用途 |
 |------|------|------|
-| `run-auto.bat` | 你（双击） | 启动器。找 bash → 注入 PATH → 读 config → git checkpoint → 调 run-loop.sh |
-| `run-loop.sh` | `.bat` 调用 | 循环引擎。读 config → 安全检查 → 会话管理 → 调 CC → 检查停止条件 → 下一轮 |
-| `config.json` | `.bat` + `.sh` 读取 | v2.0 核心。所有运行时参数集中管理：轮次/预算/会话策略/插件/显示/校验 |
-| `auto-prompt.md` | CC 每轮读取 | 任务定义。告诉 CC 它是谁、要做什么、什么不能做 |
-| `project.md` | CC 每轮读取 | 项目主文档。技术栈 + 任务清单 + 开发规则 |
+| `run-auto.bat` | 你（双击） | 根启动器。找 `claude`/`node`/`bash` → 注入 PATH → 调 `autofish.js` |
+| `autofish.js` | `run-auto.bat` 调用 | 控制面。显示项目菜单、读取 `state/configList.json`、探测项目路径、创建每项目 state、决定是 bootstrap 还是进入 run-loop |
+| `run-loop.sh` | `autofish.js` 调用 | 循环引擎。在目标项目目录里运行 Claude，但配置/日志/阻塞状态都读取集中 state 路径 |
+| 根 `config.json` | `autofish.js` + `run-loop.sh` 读取 | 根默认配置模板。新项目创建时复制为每项目 `config.json` |
+| `state/projects/<project-id>/config.json` | `run-loop.sh` 读取 | 每项目运行配置：项目路径、预算、轮次、插件、显示、校验 |
+| `auto-prompt.md` | CC 每轮读取 | 通用任务定义。实际文件路径由运行时上下文注入 |
+| `state/projects/<project-id>/project.md` | CC 每轮读取 | 项目主文档。技术栈 + 任务清单 + 开发规则 |
+| `bootstrap-seed.md` | 新项目初始化时读取 | 引导 Claude 先理解 `PROJECT_SPEC.md`，再与用户对话生成 `project.md` |
 
 ### 3.6 配置文件（config.json）— v2.0 新增
 
-所有运行时参数集中在 `.asdf/config.json` 中，脚本启动时自动读取。缺失时回退到 v1.0 默认值。
+所有运行时参数由 AutoFish 根 `config.json` 作为默认模板，项目实际运行时读取 `state/projects/<project-id>/config.json`。缺失时回退到默认值。
 
 **完整配置项：**
 
@@ -228,13 +233,13 @@ C:\Users\<用户名>\.claude\
 
 1. **Windows** + Git for Windows（提供 bash）
 2. **Claude Code** 已安装并在 PATH 中
-3. **项目** 有 `.asdf/project.md`，其中 Part C 有 `- [ ]` 格式的任务清单
+3. **目标项目** 是可访问的 git 项目目录（已有 `project.md` 可直接运行；没有则会先进入 bootstrap 初始化）
 4. **cc-safe-setup 8 个安全钩子已安装**（**强烈推荐**，v2.0 可配置，详见 §3.5）
 
 ### 启动
 
 ```
-双击 .asdf/run-auto.bat
+双击 run-auto.bat
 ```
 
 ### 运行中
@@ -256,10 +261,10 @@ C:\Users\<用户名>\.claude\
 
 ```bash
 # 1. 查看完成的任务
-cat .asdf/task-done.txt
+cat state/projects/<project-id>/runtime/task-done.txt
 
 # 2. 查看阻塞项
-cat .asdf/task-blocked.txt
+cat state/projects/<project-id>/runtime/task-blocked.txt
 
 # 3. 查看 git 变更摘要
 git diff --stat HEAD~N   # N = 完成的轮数
@@ -278,58 +283,44 @@ cmake -B build && cmake --build build
 ```
 双击 run-auto.bat
   │
-  ├─ [1] 检测 CC 安装
-  │     └─ 失败 → 友好错误提示 + 安装指南 → 退出
+  ├─ [1] 检测 CC / Node / bash
+  │     └─ 任一缺失 → 报错退出
   │
-  ├─ [2] 探测 bash.exe
-  │     └─ 失败 → 报错退出
-  │
-  ├─ [3] 注入 PATH
-  │     ├─ Git usr/bin (date, cat, rm, mktemp, sleep)
+  ├─ [2] 注入 PATH
+  │     ├─ Git usr/bin
   │     └─ mingw64/bin (gcc)
   │
-  ├─ [4] 读取 config.json
-  │     └─ show_cc_window? → 启动独立监察窗口 (PowerShell tail -f)
-  │
-  ├─ [5] Git checkpoint
-  │     └─ git add -A && git commit -m "checkpoint: pre-autonomous <ts>"
-  │
-  ├─ [6] 启动 bash run-loop.sh
+  ├─ [3] 启动 autofish.js
   │     │
-  │     ├─ 安全检查:
-  │     │   ├─ .git 存在?
-  │     │   ├─ claude 可用? (含版本检测)
-  │     │   ├─ 插件检查 (required/optional/auto_install)
-  │     │   ├─ project.md 格式校验 (required_sections + task_format)
-  │     │   └─ 任一失败 → 退出
-  │     │
-  │     └─ while (轮数 < max_rounds):
+  │     ├─ 读取 state/configList.json
+  │     ├─ 显示菜单：继续上次 / 已注册项目 / New Project / Exit
+  │     ├─ 路径探测与项目确认
+  │     ├─ 创建或复用 state/projects/<project-id>/
+  │     └─ 判断 project.md 是否存在
   │           │
-  │           ├─ 检查会话重建条件
-  │           │   ├─ every_n_rounds? (每 N 轮重建)
-  │           │   ├─ context_ratio? (上下文超阈值)
-  │           │   ├─ SESSION_RESET? (任务标记触发)
-  │           │   └─ mode=any/all 组合判断
+  │           ├─ 不存在
+  │           │   └─ 打开 Claude bootstrap 窗口
+  │           │      ├─ 先读 PROJECT_SPEC.md
+  │           │      ├─ 再与用户交互补全需求
+  │           │      └─ 生成 state/projects/<project-id>/project.md
   │           │
-  │           ├─ 读取 auto-prompt.md
-  │           ├─ claude -p "$prompt" [--continue] --output-format stream-json ...
-  │           │   └─ CC 读取 project.md + config.json
-  │           │   └─ CC 找到第一个 - [ ] → 完成 → 标记 [x]
-  │           │   └─ 写入 task-done.txt / task-blocked.txt / SESSION_RESET
-  │           │   └─ turns 耗尽 或 budget 耗尽 → CC 退出
-  │           │
-  │           ├─ 检查停止条件 ───────────┐
-  │           │                          │
-  │           │   ALL_COMPLETE? ─────────┤─ 是 → 停止
-  │           │   ALL_BLOCKED? ──────────┤─ 是 → 停止
-  │           │   MAX_ROUNDS? ───────────┤─ 是 → 停止
-  │           │   RUNTIME_LIMIT? ────────┤─ 是 → 停止
-  │           │   STOP_TIME? ────────────┤─ 是 → 停止
-  │           │   连续5轮无进展? ────────┤─ 是 → 停止
-  │           │                          │
-  │           │   以上皆否 ──────────────┘─ 等待 N s → 下一轮
-  │           │
-  │           └─ sleep N
+  │           └─ 已存在
+  │               └─ 调 run-loop.sh
+  │                   │
+  │                   ├─ 安全检查
+  │                   │   ├─ git 项目可用
+  │                   │   ├─ claude 可用
+  │                   │   ├─ 插件检查
+  │                   │   ├─ 读取每项目 config
+  │                   │   └─ 校验集中式 project.md
+  │                   │
+  │                   └─ while (轮数 < max_rounds)
+  │                         ├─ 检查会话重建条件
+  │                         ├─ 拼接 runtime context + auto-prompt.md
+  │                         ├─ claude -p "$prompt" [--continue]
+  │                         ├─ 写入 runtime/task-done.txt / task-blocked.txt / SESSION_RESET
+  │                         ├─ 检查停止条件
+  │                         └─ 等待 N 秒 → 下一轮
   │
   └─ 结束，显示结果摘要
 ```
@@ -442,7 +433,7 @@ AutoFish 的安全防线分为两层：内层是 CC 自带的 `--permission-mode
 | 钩子安装失败 / jq not found | jq 未安装 | 从 GitHub 下载 jq-windows-amd64.exe，放到 `C:\Program Files\Git\usr\bin\jq.exe` |
 | 语法检查钩子不工作 | gcc 不在 PATH | `winget install BrechtSanders.WinLibs.POSIX.MSVCRT`，确认 gcc 在 PATH 中 |
 | 钩子导致 CC 变慢 | 语法检查钩子每次编辑后跑 gcc | 正常现象，语法检查耗时 < 1s。如影响体验可临时禁用 syntax-check 钩子 |
-| `config.json` 不生效 | JSON 语法错误（如多余逗号） | 用 `node -e "JSON.parse(require('fs').readFileSync('.asdf/config.json','utf8'))"` 验证 JSON 合法性 |
+| `config.json` 不生效 | JSON 语法错误（如多余逗号） | 用 `node -e "JSON.parse(require('fs').readFileSync('state/projects/<project-id>/config.json','utf8'))"` 验证 JSON 合法性 |
 | 会话复用导致 CC 方向偏离 | `--continue` 累积过多上下文 | 在 project.md 任务中加 `[RESET]` 标记，或降低 `session.rebuild_strategy.every_n_rounds` |
 | 插件检查报错但已安装 | `check_single_plugin` 检测逻辑不完善 | 将对应插件从 `plugins.required` 移到 `plugins.optional`，或设置 `plugins.check_on_startup: false` |
 | 运行时限制未触发 | 时间格式错误或时区问题 | `stop_at` 使用 24 小时制本地时间，格式为 `HH:MM`（如 `"06:00"`）。`max_duration_minutes` 为整数分钟 |
