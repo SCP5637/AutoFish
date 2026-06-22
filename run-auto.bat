@@ -7,6 +7,10 @@ setlocal
 set "AUTOFISH_ROOT=%~dp0"
 cd /d "%AUTOFISH_ROOT%"
 
+echo.
+echo === Dependency check ===
+
+echo Checking Claude Code...
 where claude >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Claude Code CLI not found.
@@ -16,8 +20,9 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
-echo Claude Code: found
+echo   Claude Code: found
 
+echo Checking Node.js...
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Node.js not found.
@@ -25,8 +30,9 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
-echo Node.js: found
+echo   Node.js: found
 
+echo Checking Git Bash...
 set "BASH="
 for %%d in (
     "C:\Program Files\Git\bin"
@@ -49,19 +55,25 @@ if "%BASH%"=="" (
     pause
     exit /b 1
 )
-echo Found bash: %BASH%
+echo   bash: %BASH%
 
 for %%f in ("%BASH%") do set "GIT_USR_BIN=%%~dpf"
 if exist "%GIT_USR_BIN%date.exe" (
     set "PATH=%GIT_USR_BIN%;%PATH%"
-    echo Added to PATH: %GIT_USR_BIN%
+    echo   PATH+: %GIT_USR_BIN%
 )
 
 set "MINGW_BIN=C:\Users\A\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.MSVCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
 if exist "%MINGW_BIN%\gcc.exe" (
     set "PATH=%MINGW_BIN%;%PATH%"
-    echo Added to PATH: mingw64 gcc
+    echo   PATH+: mingw64 gcc
 )
+
+echo.
+echo === AutoFish ===
+
+echo Root:    %AUTOFISH_ROOT%
+echo Started: %date% %time%
 
 if not exist "%AUTOFISH_ROOT%run-loop.sh" (
     echo [ERROR] run-loop.sh not found in %AUTOFISH_ROOT%
@@ -95,13 +107,6 @@ if not exist "%AUTOFISH_ROOT%autofish.js" (
 )
 
 echo.
-echo ============================================================
-echo   AutoFish - Multi Project Control
-echo   Root: %AUTOFISH_ROOT%
-echo   Started: %date% %time%
-echo ============================================================
-echo.
-
 set "AUTOFISH_BASH=%BASH%"
 node "%AUTOFISH_ROOT%autofish.js"
 set "EXIT_CODE=%ERRORLEVEL%"

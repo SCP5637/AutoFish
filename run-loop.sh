@@ -271,6 +271,27 @@ validate_project_doc() {
     return 0
 }
 
+validate_bootstrap_confirmation() {
+    local status
+    status=$(config_val "bootstrap.status" "not_started")
+    local confirmed
+    confirmed=$(config_val "bootstrap.project_doc_confirmed" "false")
+    local config_decision
+    config_decision=$(config_val "bootstrap.config_decision" "pending")
+
+    if [ "$status" != "confirmed" ] || [ "$confirmed" != "true" ] || [ "$config_decision" = "pending" ]; then
+        log "[FATAL] Project bootstrap not confirmed"
+        log "  Project config: $PROJECT_CONFIG_FILE"
+        log "  Project doc:    $PROJECT_DOC_FILE"
+        log "  Bootstrap:      status=$status, confirmed=$confirmed, config_decision=$config_decision"
+        log "  Finish bootstrap Q&A in AutoFish before starting run-loop"
+        return 1
+    fi
+
+    log "bootstrap confirmation: PASSED"
+    return 0
+}
+
 check_safety() {
     if ! git -C "$PROJECT_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
         log "[FATAL] git project not found at $PROJECT_DIR"
@@ -288,6 +309,9 @@ check_safety() {
     fi
     if [ ! -f "$PROMPT_TEMPLATE_FILE" ]; then
         log "[FATAL] auto-prompt.md not found at $PROMPT_TEMPLATE_FILE"
+        return 1
+    fi
+    if ! validate_bootstrap_confirmation; then
         return 1
     fi
     if ! validate_project_doc; then
@@ -469,7 +493,11 @@ run_cc_round() {
     tmp_err=$(mktemp)
 
     log_sep
-    log "Round $round start"
+    log "Round $round"
+    log "  Session mode: $([ "$SESSION_ACTIVE" = true ] && echo continue || echo fresh)"
+    log "  Prompt file:  $PROMPT_TEMPLATE_FILE"
+    log "  Stream mode:  $STREAM_PROGRESS"
+    log "  Limits:       turns=$MAX_TURNS budget=\$$MAX_BUDGET"
 
     local exit_code=0
     local prompt_text
@@ -714,13 +742,13 @@ main() {
     reset_run_state
 
     log_sep
-    log "Autonomous dev loop started"
-    log "Project id: $PROJECT_ID"
-    log "Project root: $PROJECT_DIR"
-    log "Project doc: $PROJECT_DOC_FILE"
-    log "Runtime dir: $RUNTIME_DIR"
-    log "Permission: auto | Max turns/round: $MAX_TURNS | Max budget/round: \$$MAX_BUDGET"
-    log "Max rounds: $MAX_ROUNDS | Sleep: ${SLEEP_SEC}s"
+    log "Run summary"
+    log "  Project id:   $PROJECT_ID"
+    log "  Project root: $PROJECT_DIR"
+    log "  Project doc:  $PROJECT_DOC_FILE"
+    log "  Config:       $PROJECT_CONFIG_FILE"
+    log "  Runtime dir:  $RUNTIME_DIR"
+    log "  Limits:       turns=$MAX_TURNS budget=\$$MAX_BUDGET rounds=$MAX_ROUNDS sleep=${SLEEP_SEC}s"
     log_sep
 
     if ! check_safety; then
@@ -797,14 +825,15 @@ main() {
             CONTINUE)
                 local current_done_lines=0
                 [ -f "$DONE_FILE" ] && current_done_lines=$(wc -l < "$DONE_FILE" 2>/dev/null || echo 0)
+                local delta=$((current_done_lines - last_done_lines))
 
                 if [ "$current_done_lines" -gt "$last_done_lines" ]; then
                     stale_count=0
-                    log "Progress: $((current_done_lines - last_done_lines)) task(s) done this round"
+                    log "Round summary: done_delta=$delta stale_streak=$stale_count next=continue"
                     last_done_lines=$current_done_lines
                 else
                     stale_count=$((stale_count + 1))
-                    log "No progress this round (stale streak: ${stale_count})"
+                    log "Round summary: done_delta=0 stale_streak=$stale_count next=continue"
                 fi
 
                 if [ "$stale_count" -ge 5 ]; then
@@ -827,12 +856,21 @@ main() {
     log_sep
 
     echo ""
-    echo "=== Results ==="
-    echo "  Done tasks:    cat $DONE_FILE"
-    echo "  Blocked tasks: cat $BLOCKED_FILE"
-    echo "  Full log:      cat $LOG_FILE"
+    echo "=== Summary ==="
+    echo "Project id:   $PROJECT_ID"
+    echo "Project doc:  $PROJECT_DOC_FILE"
+    echo "Runtime dir:  $RUNTIME_DIR"
+    echo "Total rounds: $round"
+    echo "Stop reason:  $stop_reason"
     echo ""
-    echo "To rollback: git log --oneline | grep 'pre-autonomous'"
+    echo "=== Files ==="
+    echo "Done:         $DONE_FILE"
+    echo "Blocked:      $BLOCKED_FILE"
+    echo "Log:          $LOG_FILE"
+    echo ""
+    echo "=== Next actions ==="
+    echo "Review files above."
+    echo "Rollback: git log --oneline | grep 'pre-autonomous'"
     echo ""
 }
 

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const readline = require('readline');
-const { spawnSync, spawn } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const ROOT = normalizePath(process.env.AUTOFISH_ROOT || __dirname);
 const ROOT_CONFIG_FILE = path.join(ROOT, 'config.json');
@@ -12,6 +12,19 @@ const STATE_DIR = path.join(ROOT, 'state');
 const PROJECTS_DIR = path.join(STATE_DIR, 'projects');
 const REGISTRY_FILE = path.join(STATE_DIR, 'configList.json');
 const BASH = process.env.AUTOFISH_BASH || 'bash';
+
+const DEFAULT_BOOTSTRAP = Object.freeze({
+  schema_version: 1,
+  status: 'not_started',
+  phase: 0,
+  project_doc_confirmed: false,
+  config_decision: 'pending',
+  confirmed_at: null,
+  confirmed_by: null,
+  project_doc_source: 'none',
+  last_started_at: null,
+  last_updated_at: null,
+});
 
 main().catch((error) => {
   console.error(`[FATAL] ${error.message}`);
@@ -26,41 +39,61 @@ async function main() {
   const selection = await selectProject(registry);
 
   if (!selection) {
-    console.log('AutoFish exited.');
+    console.log('\nAutoFish exited.');
     return;
   }
 
   if (!fs.existsSync(selection.projectDir)) {
-    console.log(`Project path missing -> ${selection.projectDir}`);
+    console.log('\n=== Project missing ===');
+    console.log(`Path: ${selection.projectDir}`);
     console.log('Re-register project with New Project.');
     return;
   }
 
-  ensureProjectState(selection);
-  maybeImportRootProjectDoc(selection);
+  let projectConfig = ensureProjectState(selection);
+  projectConfig = maybeImportRootProjectDoc(selection, projectConfig);
+  projectConfig = ensureProjectState(selection, projectConfig);
+
+  const initialStatus = projectStatus(selection, projectConfig);
+  if (fs.existsSync(selection.projectDoc) && initialStatus === 'needs-confirmation' && projectConfig.bootstrap.status === 'not_started') {
+    projectConfig = setBootstrapState(selection, {
+      status: 'awaiting_project_confirmation',
+      phase: 4,
+      project_doc_confirmed: false,
+      config_decision: 'pending',
+      confirmed_at: null,
+      confirmed_by: null,
+      project_doc_source: projectConfig.bootstrap.project_doc_source === 'none' ? 'manual_existing' : projectConfig.bootstrap.project_doc_source,
+    }, projectConfig);
+  }
+
   registry.lastProjectId = selection.id;
   selection.lastSelectedAt = new Date().toISOString();
   upsertProject(registry, selection);
   saveRegistry(registry);
 
+  const status = projectStatus(selection, projectConfig);
+  printProjectSummary(selection, projectConfig, status);
+
   if (!fs.existsSync(selection.projectDoc)) {
-    const launched = openBootstrapWindow(selection);
-    if (launched) {
-      console.log('project.md missing -> opened Claude bootstrap window.');
-      console.log(`Target project: ${selection.projectDir}`);
-      console.log(`Target doc: ${selection.projectDoc}`);
-      console.log('Finish bootstrap in new window. Then rerun AutoFish.');
-    } else {
-      console.log('[ERROR] Failed to open Claude bootstrap window.');
-      console.log(`Bootstrap script: ${toPosixPath(path.join(selection.stateDir, 'bootstrap-launch.ps1'))}`);
-      console.log('Run script manually or fix terminal/permissions, then rerun AutoFish.');
-    }
+    const reason = 'project.md missing';
+    projectConfig = markBootstrapLaunch(selection, projectConfig, 'new');
+    const launched = openBootstrapWindow(selection, projectConfig, 'new', reason);
+    printBootstrapLaunchResult(selection, projectConfig, launched, reason);
+    return;
+  }
+
+  if (!isBootstrapConfirmed(projectConfig)) {
+    const reason = bootstrapReason(projectConfig);
+    projectConfig = markBootstrapLaunch(selection, projectConfig, 'review');
+    const launched = openBootstrapWindow(selection, projectConfig, 'review', reason);
+    printBootstrapLaunchResult(selection, projectConfig, launched, reason);
     return;
   }
 
   ensureRuntimeFiles(selection);
   maybeOpenMonitorWindow(selection);
-  runLoop(selection);
+  runLoop(selection, projectConfig);
 }
 
 async function selectProject(registry) {
@@ -69,6 +102,7 @@ async function selectProject(registry) {
     const answer = (await ask('Select: ')).trim();
 
     if (!answer) {
+      console.log('');
       continue;
     }
 
@@ -78,13 +112,13 @@ async function selectProject(registry) {
 
     if (answer === '0') {
       if (!registry.lastProjectId) {
-        console.log('No last project.');
+        console.log('\n[INPUT] No last project.\n');
         continue;
       }
 
       const last = registry.projects.find((project) => project.id === registry.lastProjectId);
       if (!last) {
-        console.log('Last project missing from registry.');
+        console.log('\n[INPUT] Last project missing from registry.\n');
         continue;
       }
 
@@ -105,39 +139,56 @@ async function selectProject(registry) {
       return normalizeProjectRecord(registry.projects[index - 1]);
     }
 
-    console.log('Invalid selection.');
+    console.log('\n[INPUT] Invalid selection.\n');
   }
 }
 
 function printMenu(registry) {
   console.log('');
   console.log('================ AutoFish ================');
+  console.log('');
+  console.log('Root:');
+  console.log(`  ${toPosixPath(ROOT)}`);
+  console.log('');
+  console.log('Last:');
+
   if (registry.lastProjectId) {
     const last = registry.projects.find((project) => project.id === registry.lastProjectId);
     if (last) {
-      console.log(`0. Continue last project -> ${last.name} [${projectStatus(last)}]`);
-      console.log(`   ${last.projectDir}`);
+      console.log(`  0. ${padRight(last.name, 28)} [${projectStatus(last)}]`);
+      console.log(`     ${last.projectDir}`);
     } else {
-      console.log('0. Continue last project -> missing');
+      console.log('  0. none');
     }
   } else {
-    console.log('0. Continue last project -> none');
+    console.log('  0. none');
   }
 
-  registry.projects.forEach((project, index) => {
-    console.log(`${index + 1}. ${project.name} [${projectStatus(project)}]`);
-    console.log(`   ${project.projectDir}`);
-  });
+  console.log('');
+  console.log('Projects:');
+  if (registry.projects.length === 0) {
+    console.log('  (none)');
+  } else {
+    registry.projects.forEach((project, index) => {
+      console.log(`  ${String(index + 1).padEnd(2)} ${padRight(project.name, 28)} [${projectStatus(project)}]`);
+      console.log(`     ${project.projectDir}`);
+    });
+  }
 
-  console.log(`${registry.projects.length + 1}. New Project`);
-  console.log('X. Exit');
+  console.log('');
+  console.log('Actions:');
+  console.log(`  ${registry.projects.length + 1}. New Project`);
+  console.log('  X. Exit');
+  console.log('');
   console.log('==========================================');
 }
 
 async function createNewProjectInteractive(registry) {
   while (true) {
+    console.log('\n=== New Project ===\n');
     const raw = (await ask('Input project path (blank = cancel): ')).trim();
     if (!raw) {
+      console.log('');
       return null;
     }
 
@@ -149,13 +200,14 @@ async function createNewProjectInteractive(registry) {
     if (samePath(resolved, ROOT)) {
       const confirmSelf = await confirm('Target is AutoFish root itself. Continue? [y/N]: ', false);
       if (!confirmSelf) {
+        console.log('');
         continue;
       }
     }
 
     const existing = registry.projects.find((project) => samePath(project.projectDir, resolved));
     if (existing) {
-      console.log(`Project already registered -> ${existing.name}`);
+      console.log(`\nUsing existing project -> ${existing.name}\n`);
       return normalizeProjectRecord(existing);
     }
 
@@ -170,7 +222,7 @@ async function createNewProjectInteractive(registry) {
 async function resolveProjectPathInteractive(inputPath) {
   const normalizedInput = normalizeInputPath(inputPath);
   if (!normalizedInput) {
-    console.log('Path invalid.');
+    console.log('\n[PATH] Path invalid.\n');
     return null;
   }
 
@@ -194,12 +246,17 @@ async function resolveProjectPathInteractive(inputPath) {
     return useFound ? candidates[0] : null;
   }
 
+  console.log('');
+  console.log('=== Detected projects ===');
   console.log('Current path is not a git project. Found multiple nearby projects:');
   candidates.forEach((candidate, index) => {
     console.log(`  ${index + 1}. ${candidate}`);
   });
+  console.log('');
+  console.log('Actions:');
   console.log('  C. Use current path anyway');
   console.log('  R. Re-enter path');
+  console.log('');
 
   while (true) {
     const answer = (await ask('Choose: ')).trim();
@@ -216,7 +273,7 @@ async function resolveProjectPathInteractive(inputPath) {
       return candidates[index - 1];
     }
 
-    console.log('Invalid selection.');
+    console.log('\n[INPUT] Invalid selection.\n');
   }
 }
 
@@ -310,33 +367,97 @@ function gitRootFor(targetPath) {
   return value ? normalizePath(value) : null;
 }
 
-function ensureProjectState(project) {
+function ensureProjectState(project, seedConfig = null) {
   ensureDir(project.stateDir);
   ensureDir(project.runtimeDir);
 
-  if (!fs.existsSync(project.configFile)) {
-    const rootConfig = readJson(ROOT_CONFIG_FILE, {});
-    const projectConfig = {
-      ...rootConfig,
-      project_dir: project.projectDir,
-      project_doc: project.projectDoc,
-      state_dir: project.stateDir,
-      runtime_dir: project.runtimeDir,
-      project_id: project.id,
-    };
-    writeJson(project.configFile, projectConfig);
+  const rootConfig = readJson(ROOT_CONFIG_FILE, {});
+  const existingConfig = seedConfig || readJson(project.configFile, {});
+  const mergedConfig = mergeDeep(rootConfig, existingConfig);
+  const normalizedConfig = normalizeProjectConfig(mergedConfig, project);
+
+  if (!fs.existsSync(project.configFile) || JSON.stringify(existingConfig) !== JSON.stringify(normalizedConfig)) {
+    writeJson(project.configFile, normalizedConfig);
   }
+
+  return normalizedConfig;
 }
 
-function maybeImportRootProjectDoc(project) {
+function normalizeProjectConfig(config, project) {
+  const normalized = mergeDeep({}, config);
+  normalized.project_dir = project.projectDir;
+  normalized.project_doc = project.projectDoc;
+  normalized.state_dir = project.stateDir;
+  normalized.runtime_dir = project.runtimeDir;
+  normalized.project_id = project.id;
+  normalized.bootstrap = normalizeBootstrapState(normalized.bootstrap, fs.existsSync(project.projectDoc));
+  return normalized;
+}
+
+function normalizeBootstrapState(currentBootstrap, hasProjectDoc) {
+  const bootstrap = { ...DEFAULT_BOOTSTRAP, ...(currentBootstrap || {}) };
+
+  if (!currentBootstrap) {
+    if (hasProjectDoc) {
+      bootstrap.status = 'awaiting_project_confirmation';
+      bootstrap.phase = 4;
+      bootstrap.project_doc_source = 'manual_existing';
+    }
+  }
+
+  return bootstrap;
+}
+
+function maybeImportRootProjectDoc(project, projectConfig) {
   if (fs.existsSync(project.projectDoc)) {
-    return;
+    return projectConfig;
   }
 
   const rootDoc = path.join(project.projectDir, 'project.md');
-  if (fs.existsSync(rootDoc)) {
-    fs.copyFileSync(rootDoc, project.projectDoc);
+  if (!fs.existsSync(rootDoc)) {
+    return projectConfig;
   }
+
+  fs.copyFileSync(rootDoc, project.projectDoc);
+  return setBootstrapState(project, {
+    status: 'awaiting_project_confirmation',
+    phase: 4,
+    project_doc_confirmed: false,
+    config_decision: 'pending',
+    confirmed_at: null,
+    confirmed_by: null,
+    project_doc_source: 'imported_root_project_md',
+  }, projectConfig);
+}
+
+function setBootstrapState(project, patch, baseConfig = null) {
+  const currentConfig = baseConfig || ensureProjectState(project);
+  const now = new Date().toISOString();
+  const updatedConfig = mergeDeep(currentConfig, {
+    bootstrap: {
+      ...currentConfig.bootstrap,
+      ...patch,
+      last_updated_at: now,
+    },
+  });
+
+  if (patch.status === 'in_progress') {
+    updatedConfig.bootstrap.last_started_at = now;
+  }
+
+  writeJson(project.configFile, updatedConfig);
+  return updatedConfig;
+}
+
+function markBootstrapLaunch(project, projectConfig, mode) {
+  const hasProjectDoc = fs.existsSync(project.projectDoc);
+  const phase = !hasProjectDoc ? 1 : (!projectConfig.bootstrap.project_doc_confirmed ? 4 : 5);
+  return setBootstrapState(project, {
+    status: 'in_progress',
+    phase,
+    project_doc_confirmed: hasProjectDoc ? projectConfig.bootstrap.project_doc_confirmed : false,
+    config_decision: hasProjectDoc ? projectConfig.bootstrap.config_decision : 'pending',
+  }, projectConfig);
 }
 
 function ensureRuntimeFiles(project) {
@@ -374,12 +495,12 @@ function maybeOpenMonitorWindow(project) {
   return result.status === 0 && !result.error;
 }
 
-function openBootstrapWindow(project) {
+function openBootstrapWindow(project, projectConfig, mode, reason) {
   const bootstrapSeed = fs.readFileSync(path.join(ROOT, 'bootstrap-seed.md'), 'utf8');
-  const prompt = `${bootstrapSeed}\n## AutoFish runtime context\n\n- AUTOFISH_ROOT: ${project.root}\n- AUTOFISH_PROJECT_ID: ${project.id}\n- AUTOFISH_PROJECT_DIR: ${project.projectDir}\n- AUTOFISH_PROJECT_DOC: ${project.projectDoc}\n\n## Required first actions\n\n1. Read: ${toPosixPath(path.join(ROOT, 'PROJECT_SPEC.md'))}\n2. Read target project README / build config / test config / key entry files\n3. Talk with user until task scope is clear enough\n4. Use Write to create or update: ${project.projectDoc}\n\nDo not start code implementation. Stop after project.md is ready.\n`;
+  const prompt = `${bootstrapSeed}\n## AutoFish runtime context\n\n- AUTOFISH_ROOT: ${project.root}\n- AUTOFISH_PROJECT_ID: ${project.id}\n- AUTOFISH_PROJECT_DIR: ${project.projectDir}\n- AUTOFISH_STATE_DIR: ${project.stateDir}\n- AUTOFISH_RUNTIME_DIR: ${project.runtimeDir}\n- AUTOFISH_PROJECT_DOC: ${project.projectDoc}\n- AUTOFISH_PROJECT_CONFIG: ${project.configFile}\n- AUTOFISH_BOOTSTRAP_MODE: ${mode}\n- AUTOFISH_BOOTSTRAP_STATUS: ${projectConfig.bootstrap.status}\n- BOOTSTRAP_REASON: ${reason}\n\n## Required first actions\n\n1. Read: ${toPosixPath(path.join(ROOT, 'PROJECT_SPEC.md'))}\n2. Read target project README / build config / test config / key entry files\n3. Follow the five bootstrap phases strictly. Do not skip phases.\n4. Do not write ${project.projectDoc} before phase 4 explicit confirmation.\n5. Do not write ${project.configFile} before phase 5 config decision.\n6. After bootstrap is complete, stop. Do not modify business code.\n`;
 
   const scriptPath = path.join(project.stateDir, 'bootstrap-launch.ps1');
-  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = 'AutoFish Bootstrap - ${psSingleQuote(project.name)}'\n$bootstrapPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host 'Close this window after fixing PATH, then rerun AutoFish.' -ForegroundColor DarkYellow\n  return\n}\n& claude -n 'AutoFish Bootstrap - ${psSingleQuote(project.name)}' $bootstrapPrompt\nWrite-Host ''\nWrite-Host 'Bootstrap session ended. If project.md is ready, return to AutoFish and rerun.' -ForegroundColor DarkYellow\n`;
+  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = 'AutoFish Bootstrap - ${psSingleQuote(project.name)}'\n$bootstrapPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\n$env:AUTOFISH_PROJECT_CONFIG = '${psSingleQuote(project.configFile)}'\n$env:AUTOFISH_PROJECT_DOC = '${psSingleQuote(project.projectDoc)}'\n$env:AUTOFISH_BOOTSTRAP_MODE = '${psSingleQuote(mode)}'\n$env:AUTOFISH_BOOTSTRAP_STATUS = '${psSingleQuote(projectConfig.bootstrap.status)}'\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host 'Close this window after fixing PATH, then rerun AutoFish.' -ForegroundColor DarkYellow\n  return\n}\n& claude -n 'AutoFish Bootstrap - ${psSingleQuote(project.name)}' $bootstrapPrompt\nWrite-Host ''\nWrite-Host 'Bootstrap session ended. Return to AutoFish when project.md/config confirmation is done.' -ForegroundColor DarkYellow\n`;
   fs.writeFileSync(scriptPath, script, 'utf8');
 
   const result = spawnSync('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
@@ -391,7 +512,7 @@ function openBootstrapWindow(project) {
   return result.status === 0 && !result.error;
 }
 
-function runLoop(project) {
+function runLoop(project, projectConfig) {
   const env = {
     ...process.env,
     AUTOFISH_ROOT: project.root,
@@ -401,6 +522,7 @@ function runLoop(project) {
     AUTOFISH_PROJECT_CONFIG: project.configFile,
     AUTOFISH_PROJECT_DOC: project.projectDoc,
     AUTOFISH_RUNTIME_DIR: project.runtimeDir,
+    AUTOFISH_BOOTSTRAP_STATUS: projectConfig.bootstrap.status,
   };
 
   const result = spawnSync(BASH, [toPosixPath(path.join(ROOT, 'run-loop.sh'))], {
@@ -413,16 +535,10 @@ function runLoop(project) {
   process.exit(result.status || 0);
 }
 
-function projectStatus(project) {
+function projectStatus(project, configOverride = null) {
   const normalized = normalizeProjectRecord(project);
   if (!fs.existsSync(normalized.projectDir)) {
     return 'missing';
-  }
-  if (fs.existsSync(path.join(normalized.runtimeDir, 'WhatNeedToDo.md'))) {
-    return 'blocked';
-  }
-  if (!fs.existsSync(normalized.projectDoc)) {
-    return 'needs-bootstrap';
   }
 
   const doneFile = path.join(normalized.runtimeDir, 'task-done.txt');
@@ -435,7 +551,79 @@ function projectStatus(project) {
     return 'blocked';
   }
 
+  if (fs.existsSync(path.join(normalized.runtimeDir, 'WhatNeedToDo.md'))) {
+    return 'blocked';
+  }
+
+  if (!fs.existsSync(normalized.projectDoc)) {
+    return 'needs-bootstrap';
+  }
+
+  const projectConfig = configOverride || readJson(normalized.configFile, {});
+  const bootstrap = normalizeBootstrapState(projectConfig.bootstrap, true);
+  if (bootstrap.status === 'in_progress') {
+    return 'bootstrap-in-progress';
+  }
+
+  if (!isBootstrapConfirmed({ bootstrap })) {
+    return 'needs-confirmation';
+  }
+
   return 'ready';
+}
+
+function isBootstrapConfirmed(projectConfig) {
+  const bootstrap = normalizeBootstrapState(projectConfig.bootstrap, true);
+  return bootstrap.status === 'confirmed'
+    && bootstrap.project_doc_confirmed === true
+    && bootstrap.config_decision !== 'pending';
+}
+
+function bootstrapReason(projectConfig) {
+  const bootstrap = normalizeBootstrapState(projectConfig.bootstrap, true);
+  if (!bootstrap.project_doc_confirmed) {
+    return 'project.md exists but is not confirmed for run-loop';
+  }
+  if (bootstrap.config_decision === 'pending') {
+    return 'project.md confirmed but config decision is still pending';
+  }
+  return `bootstrap status is ${bootstrap.status}`;
+}
+
+function printProjectSummary(project, projectConfig, status) {
+  const bootstrap = projectConfig.bootstrap;
+  console.log('');
+  console.log('=== Selected project ===');
+  console.log(`Name:        ${project.name}`);
+  console.log(`Status:      ${status}`);
+  console.log(`Project:     ${project.projectDir}`);
+  console.log(`State dir:   ${project.stateDir}`);
+  console.log(`Project doc: ${project.projectDoc}`);
+  console.log(`Config:      ${project.configFile}`);
+  console.log(`Bootstrap:   status=${bootstrap.status}, phase=${bootstrap.phase}, confirmed=${bootstrap.project_doc_confirmed}, config=${bootstrap.config_decision}`);
+  console.log('');
+}
+
+function printBootstrapLaunchResult(project, projectConfig, launched, reason) {
+  console.log('=== Bootstrap required ===');
+  console.log(`Reason:      ${reason}`);
+  console.log(`Project:     ${project.projectDir}`);
+  console.log(`Project doc: ${project.projectDoc}`);
+  console.log(`Config:      ${project.configFile}`);
+  console.log(`Bootstrap:   status=${projectConfig.bootstrap.status}, phase=${projectConfig.bootstrap.phase}`);
+  console.log('');
+
+  if (launched) {
+    console.log('Opened Claude bootstrap window.');
+    console.log('Finish the five-stage Q&A there.');
+    console.log('After final confirmation, rerun AutoFish from this terminal.');
+  } else {
+    console.log('[ERROR] Failed to open Claude bootstrap window.');
+    console.log(`Bootstrap script: ${toPosixPath(path.join(project.stateDir, 'bootstrap-launch.ps1'))}`);
+    console.log('Run that script manually or fix terminal/permissions, then rerun AutoFish.');
+  }
+
+  console.log('');
 }
 
 function buildProjectRecord(projectDir) {
@@ -500,6 +688,44 @@ function upsertProject(registry, project) {
   }
 }
 
+function mergeDeep(base, override) {
+  if (!isPlainObject(base)) {
+    return cloneValue(override);
+  }
+  const result = cloneValue(base);
+  if (!isPlainObject(override)) {
+    return result;
+  }
+
+  for (const [key, value] of Object.entries(override)) {
+    if (isPlainObject(value) && isPlainObject(result[key])) {
+      result[key] = mergeDeep(result[key], value);
+    } else {
+      result[key] = cloneValue(value);
+    }
+  }
+
+  return result;
+}
+
+function cloneValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneValue(item));
+  }
+  if (isPlainObject(value)) {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = cloneValue(item);
+    }
+    return out;
+  }
+  return value;
+}
+
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
 function readJson(filePath, fallback) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -525,7 +751,7 @@ function normalizeInputPath(inputPath) {
 
   const resolved = normalizePath(stripped);
   if (!fs.existsSync(resolved)) {
-    console.log(`Path not found -> ${resolved}`);
+    console.log(`\n[PATH] Path not found -> ${resolved}\n`);
     return null;
   }
 
@@ -547,6 +773,10 @@ function samePath(left, right) {
 
 function sanitizeName(name) {
   return name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'project';
+}
+
+function padRight(value, length) {
+  return String(value).padEnd(length, ' ');
 }
 
 function psSingleQuote(value) {

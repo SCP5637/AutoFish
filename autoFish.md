@@ -233,7 +233,7 @@ C:\Users\<用户名>\.claude\
 
 1. **Windows** + Git for Windows（提供 bash）
 2. **Claude Code** 已安装并在 PATH 中
-3. **目标项目** 是可访问的 git 项目目录（已有 `project.md` 可直接运行；没有则会先进入 bootstrap 初始化）
+3. **目标项目** 是可访问的 git 项目目录（没有 `project.md` 时会先进入五阶段 bootstrap 问答；只有 bootstrap 明确确认后才允许自动开发）
 4. **cc-safe-setup 8 个安全钩子已安装**（**强烈推荐**，v2.0 可配置，详见 §3.5）
 
 ### 启动
@@ -300,18 +300,21 @@ cmake -B build && cmake --build build
   │           │
   │           ├─ 不存在
   │           │   └─ 打开 Claude bootstrap 窗口
-  │           │      ├─ 先读 PROJECT_SPEC.md
-  │           │      ├─ 再与用户交互补全需求
-  │           │      └─ 生成 state/projects/<project-id>/project.md
+  │           │      ├─ 阶段1：读取规范与项目事实
+  │           │      ├─ 阶段2：多轮细化需求
+  │           │      ├─ 阶段3：确认特殊开发偏好
+  │           │      ├─ 阶段4：展示草案并确认生成 project.md
+  │           │      └─ 阶段5：确认是否定制 config.json
   │           │
   │           └─ 已存在
-  │               └─ 调 run-loop.sh
+  │               ├─ 若 bootstrap 未确认 → 继续 bootstrap review
+  │               └─ 若 bootstrap 已确认 → 调 run-loop.sh
   │                   │
   │                   ├─ 安全检查
   │                   │   ├─ git 项目可用
   │                   │   ├─ claude 可用
   │                   │   ├─ 插件检查
-  │                   │   ├─ 读取每项目 config
+  │                   │   ├─ 校验 bootstrap confirmed
   │                   │   └─ 校验集中式 project.md
   │                   │
   │                   └─ while (轮数 < max_rounds)

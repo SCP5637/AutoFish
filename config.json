@@ -5,6 +5,18 @@
   "max_budget_per_round_usd": 5.00,
   "max_rounds": 200,
   "sleep_between_rounds_sec": 5,
+  "bootstrap": {
+    "schema_version": 1,
+    "status": "not_started",
+    "phase": 0,
+    "project_doc_confirmed": false,
+    "config_decision": "pending",
+    "confirmed_at": null,
+    "confirmed_by": null,
+    "project_doc_source": "none",
+    "last_started_at": null,
+    "last_updated_at": null
+  },
   "session": {
     "_comment": "会话管理。rebuild_strategy 控制何时放弃当前会话、启动全新 CC 会话。",
     "rebuild_strategy": {
