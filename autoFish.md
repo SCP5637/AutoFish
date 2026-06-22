@@ -333,6 +333,13 @@ cmake -B build && cmake --build build
   └─ 结束，显示结果摘要
 ```
 
+### 5.1 Bootstrap 交互接线
+
+- **普通 bootstrap 输出路径**：`autofish.js` 的 `openBootstrapWindow()` 读取 `bootstrap-seed.md`，拼接 runtime context，写 `state/projects/<project-id>/bootstrap-launch.ps1`，再由脚本执行 `claude -n ... $bootstrapPrompt`。当前 bootstrap 是独立 Claude 窗口，不经过 `run-loop.sh`。
+- **阶段 1 边界**：`bootstrap-seed.md` 强制阶段 1 先读 `PROJECT_SPEC.md`、README、构建/测试配置、关键入口文件，只总结事实，不写 `project.md` / `config.json`。代码侧当前没有在阶段 1 注入 plan mode。
+- **阶段状态来源**：`markBootstrapLaunch()` 只在启动前写 `bootstrap.phase`：无 `project.md` → `1`；文档未确认 → `4`；文档已确认但配置未决 → `5`。阶段 2/3 目前只存在于 `bootstrap-seed.md` 的对话规则，不在 `autofish.js` 状态机里。
+- **plan mode 接入点**：阶段 2~4 若要切到 plan mode，最窄接点是 `openBootstrapWindow()` 生成的 bootstrap prompt / `bootstrap-launch.ps1` 启动命令，因为当前只有这里决定 bootstrap 会话如何启动；`runLoop()` 是独立正常开发路径，不应受影响。
+
 ---
 
 ## 6. 停止条件
