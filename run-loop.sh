@@ -805,8 +805,6 @@ handle_what_need_to_do() {
         return 0
     fi
 
-    log_run "Found existing WhatNeedToDo.md, analyzing user interaction..."
-
     local section
     section=$(sed -n '/^## 阻塞任务清单/,/^## /p' "$WNTD_FILE" 2>/dev/null)
 
@@ -815,50 +813,10 @@ handle_what_need_to_do() {
     local resolved
     resolved=$(echo "$section" | grep -c "^- \[x\]" 2>/dev/null | tr -d '\r\n' || echo 0)
 
+    log_run "Found existing WhatNeedToDo.md, handing off to dedicated WNTD window..."
     log_note "Blocked items in WNTD: $resolved resolved, $unresolved remaining"
-
-    if [ "$unresolved" -eq 0 ] && [ "$resolved" -gt 0 ]; then
-        log_key "All blocked items resolved by user, continuing execution..."
-        rm -f "$WNTD_FILE"
-        return 0
-    fi
-
-    if [ "$resolved" -gt 0 ]; then
-        log_run "User resolved $resolved item(s), updating document via CC..."
-        update_what_need_to_do
-
-        local new_section
-        new_section=$(sed -n '/^## 阻塞任务清单/,/^## /p' "$WNTD_FILE" 2>/dev/null)
-        local new_unresolved
-        new_unresolved=$(echo "$new_section" | grep -c "^- \[ \]" 2>/dev/null | tr -d '\r\n' || echo 0)
-
-        if [ "$new_unresolved" -eq 0 ]; then
-            log_key "CC resolved all remaining items during update, continuing..."
-            rm -f "$WNTD_FILE"
-            return 0
-        fi
-
-        log_warn "Still $new_unresolved item(s) need human review. See: $WNTD_FILE"
-        exit 0
-    fi
-
-    local has_blocked=false
-    if [ -f "$BLOCKED_FILE" ] && [ -s "$BLOCKED_FILE" ]; then
-        local blocked_items
-        blocked_items=$(grep -cv "ALL_BLOCKED" "$BLOCKED_FILE" 2>/dev/null | tr -d '\r\n' || echo 0)
-        if [ "$blocked_items" -gt 0 ] 2>/dev/null; then
-            has_blocked=true
-        fi
-    fi
-
-    if $has_blocked; then
-        log_warn "Blocks present and WNTD not yet reviewed by user."
-        log_note "Edit: $WNTD_FILE (mark resolved as - [x], add notes), then restart."
-        exit 0
-    else
-        log_warn "WNTD exists but no active blocked entries found. Keep file for manual review: $WNTD_FILE"
-        exit 0
-    fi
+    log_note "AutoFish main entry will open the dedicated Claude WNTD window next."
+    exit 0
 }
 
 request_stop() {
