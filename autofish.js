@@ -41,6 +41,22 @@ const DEFAULT_BOOTSTRAP = Object.freeze({
   last_updated_at: null,
 });
 
+const DEFAULT_WNTD = Object.freeze({
+  schema_version: 1,
+  status: 'idle',
+  last_reason: null,
+  continue_after_resolved: null,
+  continue_decided_at: null,
+  runtime_config_change_requested: null,
+  runtime_config_decided_at: null,
+  runtime_config_updated_at: null,
+  last_requested_at: null,
+  last_started_at: null,
+  last_finished_at: null,
+  last_blocked_at: null,
+  last_resolved_at: null,
+});
+
 const COLOR = buildColorPalette();
 
 main().catch((error) => {
@@ -409,6 +425,7 @@ function normalizeProjectConfig(config, project) {
   normalized.runtime_dir = project.runtimeDir;
   normalized.project_id = project.id;
   normalized.bootstrap = normalizeBootstrapState(normalized.bootstrap, fs.existsSync(project.projectDoc));
+  normalized.wntd = normalizeWntdState(normalized.wntd);
   return normalized;
 }
 
@@ -422,6 +439,21 @@ function normalizeBootstrapState(currentBootstrap, hasProjectDoc) {
   }
 
   return bootstrap;
+}
+
+function normalizeWntdState(currentWntd) {
+  const wntd = { ...DEFAULT_WNTD, ...(currentWntd || {}) };
+  const allowedStatus = new Set(['idle', 'pending', 'in_progress', 'resolved', 'blocked']);
+  if (!allowedStatus.has(wntd.status)) {
+    wntd.status = 'idle';
+  }
+  if (typeof wntd.continue_after_resolved !== 'boolean') {
+    wntd.continue_after_resolved = null;
+  }
+  if (typeof wntd.runtime_config_change_requested !== 'boolean') {
+    wntd.runtime_config_change_requested = null;
+  }
+  return wntd;
 }
 
 function maybeImportRootProjectDoc(project, projectConfig) {
@@ -463,6 +495,31 @@ function setBootstrapState(project, patch, baseConfig = null) {
 
   writeJson(project.configFile, updatedConfig);
   return updatedConfig;
+}
+
+function setWntdState(project, patch, baseConfig = null) {
+  const currentConfig = baseConfig || ensureProjectState(project);
+  const updatedConfig = mergeDeep(currentConfig, {
+    wntd: {
+      ...normalizeWntdState(currentConfig.wntd),
+      ...patch,
+    },
+  });
+
+  writeJson(project.configFile, updatedConfig);
+  return updatedConfig;
+}
+
+function runtimeControlSnapshot(config) {
+  return {
+    max_rounds: config.max_rounds ?? null,
+    max_turns_per_round: config.max_turns_per_round ?? null,
+    max_budget_per_round_usd: config.max_budget_per_round_usd ?? null,
+    runtime: {
+      max_duration_minutes: config.runtime?.max_duration_minutes ?? null,
+      stop_at: config.runtime?.stop_at ?? null,
+    },
+  };
 }
 
 function markBootstrapLaunch(project, projectConfig, mode) {
@@ -987,13 +1044,37 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
 
   while (true) {
     if (pendingWntdReason) {
+      const requestedAt = new Date().toISOString();
+      projectConfig = setWntdState(project, {
+        status: 'pending',
+        last_reason: pendingWntdReason,
+        last_requested_at: requestedAt,
+      }, projectConfig);
       printWntdLaunchResult(project, {
         reason: pendingWntdReason,
         phase: 'waiting',
       });
 
+      const configBeforeWntd = runtimeControlSnapshot(projectConfig);
+      projectConfig = setWntdState(project, {
+        status: 'in_progress',
+        last_reason: pendingWntdReason,
+        last_started_at: new Date().toISOString(),
+      }, projectConfig);
+
       const launched = openWntdWindow(project, pendingWntdReason);
       if (!launched) {
+        const blockedAt = new Date().toISOString();
+        projectConfig = setWntdState(project, {
+          status: 'blocked',
+          last_reason: pendingWntdReason,
+          continue_after_resolved: null,
+          continue_decided_at: null,
+          runtime_config_change_requested: null,
+          runtime_config_decided_at: null,
+          last_finished_at: blockedAt,
+          last_blocked_at: blockedAt,
+        }, projectConfig);
         printWntdLaunchResult(project, {
           reason: pendingWntdReason,
           launched: false,
@@ -1002,8 +1083,32 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
       }
 
       projectConfig = ensureProjectState(project);
+      const runtimeConfigChanged = JSON.stringify(configBeforeWntd) !== JSON.stringify(runtimeControlSnapshot(projectConfig));
       const nextStatus = projectStatus(project, projectConfig);
       const decision = decidePostWntdAction(project, nextStatus);
+      const decidedAt = new Date().toISOString();
+      const statePatch = {
+        last_reason: pendingWntdReason,
+        continue_after_resolved: decision.action !== 'stop',
+        continue_decided_at: decidedAt,
+        runtime_config_change_requested: runtimeConfigChanged,
+        runtime_config_decided_at: decidedAt,
+        last_finished_at: decidedAt,
+      };
+      if (runtimeConfigChanged) {
+        statePatch.runtime_config_updated_at = decidedAt;
+      }
+      projectConfig = setWntdState(project, decision.action === 'stop'
+        ? {
+            ...statePatch,
+            status: 'blocked',
+            last_blocked_at: decidedAt,
+          }
+        : {
+            ...statePatch,
+            status: 'resolved',
+            last_resolved_at: decidedAt,
+          }, projectConfig);
       printWntdLaunchResult(project, {
         reason: pendingWntdReason,
         nextStatus,

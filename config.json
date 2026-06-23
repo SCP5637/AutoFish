@@ -73,5 +73,24 @@
     "required_sections_comment": "project.md 中必须包含的章节标题（二级标题 ##）",
     "task_format": "- [ ]",
     "task_format_comment": "任务行的必须格式。至少需要一行匹配此格式才视为有效任务清单"
+  },
+  "wntd": {
+    "_comment": "WNTD / blocked 交互运行态。由 AutoFish 与 WNTD 专窗协同维护。",
+    "schema_version": 1,
+    "status": "idle",
+    "status_comment": "idle | pending | in_progress | resolved | blocked",
+    "last_reason": null,
+    "continue_after_resolved": null,
+    "continue_after_resolved_comment": "WNTD 结束后是否继续自动运行。null = 尚未确认",
+    "continue_decided_at": null,
+    "runtime_config_change_requested": null,
+    "runtime_config_change_requested_comment": "WNTD 中是否要求调整 max_rounds / max_turns_per_round / budget / runtime.*。null = 尚未确认",
+    "runtime_config_decided_at": null,
+    "runtime_config_updated_at": null,
+    "last_requested_at": null,
+    "last_started_at": null,
+    "last_finished_at": null,
+    "last_blocked_at": null,
+    "last_resolved_at": null
   }
 }

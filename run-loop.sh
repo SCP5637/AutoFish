@@ -794,40 +794,10 @@ $(cat "$DONE_FILE" 2>/dev/null || echo "无记录")
 
 ## 处理完成后
 
-重新运行 AutoFish。脚本会自动检测阻塞是否已解决。
+重新运行 AutoFish。主入口会优先拉起专用 WNTD Claude Code 窗口处理阻塞。
 EOF
         log_warn "Fallback WhatNeedToDo.md created"
     fi
-}
-
-update_what_need_to_do() {
-    log_run "Updating WhatNeedToDo.md (preserving user input)..."
-
-    local update_prompt
-    update_prompt=$(cat <<EOF
-你是一个项目状态更新助手。用户已处理部分阻塞项，请增量更新文档。
-
-关键文件路径：
-- WhatNeedToDo：$WNTD_FILE
-- 阻塞任务：$BLOCKED_FILE
-- 项目文档：$PROJECT_DOC_FILE
-
-原则：
-1. 保留所有用户已写内容。
-2. 只更新仍然需要处理的阻塞项。
-3. 如果某项已通过用户反馈解决，可改成 `- [x]`。
-4. 如果有新阻塞，可追加新项。
-5. 不要重写整个文档。
-EOF
-)
-
-    claude -p "$update_prompt" \
-        --permission-mode auto \
-        --max-turns 15 \
-        --max-budget-usd 0.50 \
-        2>&1 | tee -a "$LOG_FILE" || true
-
-    log_key "WhatNeedToDo.md updated"
 }
 
 handle_what_need_to_do() {
