@@ -617,17 +617,47 @@ function readWntdChecklistState(project) {
   return { resolved, unresolved };
 }
 
-function decidePostWntdAction(project, nextStatus) {
+function cleanupResolvedWntdArtifacts(project) {
+  const normalized = normalizeProjectRecord(project);
+  const wntdFile = path.join(normalized.runtimeDir, 'WhatNeedToDo.md');
+  try {
+    fs.unlinkSync(wntdFile);
+  } catch {}
+
+  const blockedFile = path.join(normalized.runtimeDir, 'task-blocked.txt');
+  if (!fs.existsSync(blockedFile)) {
+    return;
+  }
+
+  const nextContent = fs.readFileSync(blockedFile, 'utf8')
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== 'ALL_BLOCKED')
+    .join('\n')
+    .replace(/\n+$/, '');
+
+  fs.writeFileSync(blockedFile, nextContent ? `${nextContent}\n` : '', 'utf8');
+}
+
+function decidePostWntdAction(project, projectConfig, nextStatus) {
   const wntdState = readWntdChecklistState(project);
+  const wntdConfig = normalizeWntdState(projectConfig.wntd);
+  const allResolved = Boolean(wntdState && wntdState.unresolved === 0 && wntdState.resolved > 0);
+
+  if (allResolved) {
+    if (wntdConfig.continue_after_resolved === true) {
+      return { action: 'continue', wntdState, shouldCleanup: true };
+    }
+    if (wntdConfig.continue_after_resolved === false) {
+      return { action: 'pause', wntdState, shouldCleanup: false };
+    }
+    return { action: 'stop', wntdState, shouldCleanup: false };
+  }
+
   if (nextStatus !== 'blocked') {
-    return { action: 'continue', wntdState };
+    return { action: 'continue', wntdState, shouldCleanup: false };
   }
 
-  if (wntdState && wntdState.unresolved === 0 && wntdState.resolved > 0) {
-    return { action: 'continue-after-cleanup', wntdState };
-  }
-
-  return { action: 'stop', wntdState };
+  return { action: 'stop', wntdState, shouldCleanup: false };
 }
 
 function launchClaudeWindow(project, options) {
@@ -975,8 +1005,10 @@ function openWntdWindow(project, reason) {
   const prompt = `${wntdSeed}\n## AutoFish runtime context\n\n- AUTOFISH_ROOT: ${project.root}\n- AUTOFISH_PROJECT_ID: ${project.id}\n- AUTOFISH_PROJECT_DIR: ${project.projectDir}\n- AUTOFISH_STATE_DIR: ${project.stateDir}\n- AUTOFISH_RUNTIME_DIR: ${project.runtimeDir}\n- AUTOFISH_PROJECT_DOC: ${project.projectDoc}\n- AUTOFISH_PROJECT_CONFIG: ${project.configFile}\n- AUTOFISH_WNTD_FILE: ${wntdFile}\n- AUTOFISH_BLOCKED_FILE: ${blockedFile}\n- AUTOFISH_DONE_FILE: ${doneFile}\n- AUTOFISH_LOG_FILE: ${logFile}\n- WNTD_REASON: ${reason}\n\n## Required first actions\n\n1. Read ${wntdFile} if it exists.
 2. Read ${project.projectDoc} and ${project.configFile}.
 3. Enter plan mode before asking blocked-resolution questions.
-4. Do not write any file until user explicitly confirms write-back.
-5. Stop after WNTD write-back or after confirming remaining blocked items.\n`;
+4. Before leaving plan mode, explicitly ask whether to continue automation and whether to change runtime config (max_rounds, max_turns_per_round, max_budget_per_round_usd, runtime.max_duration_minutes, runtime.stop_at).
+5. Do not write any file until user explicitly confirms write-back.
+6. If user confirms those decisions, write them back into ${project.configFile} under wntd and runtime fields as needed.
+7. Stop after WNTD write-back or after confirming remaining blocked items.\n`;
 
   const scriptPath = path.join(project.stateDir, 'wntd-launch.ps1');
   return launchClaudeWindow(project, {
@@ -1024,9 +1056,9 @@ function printWntdLaunchResult(project, options) {
     console.log(colorize('error', '[ERROR] Failed to open Claude WNTD window.'));
     console.log(colorize('note', `WNTD script: ${toPosixPath(path.join(project.stateDir, 'wntd-launch.ps1'))}`));
     console.log(colorize('note', 'Run that script manually or fix terminal/permissions, then rerun AutoFish.'));
-  } else if (decision === 'continue-after-cleanup') {
-    console.log(colorize('run', 'WNTD checklist shows all blocked items resolved.'));
-    console.log(colorize('note', 'AutoFish will resume run-loop once so runtime markers can be cleared.'));
+  } else if (decision === 'pause') {
+    console.log(colorize('run', 'WNTD resolved blocked items but user chose to pause automation.'));
+    console.log(colorize('note', 'AutoFish will stop here. Rerun AutoFish later to resume with current config.'));
   } else if (nextStatus === 'blocked') {
     console.log(colorize('warn', 'Blocked items still remain after WNTD session.'));
     console.log(colorize('note', 'Review WhatNeedToDo.md / task-blocked.txt, then rerun AutoFish after more input.'));
@@ -1083,22 +1115,36 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
       }
 
       projectConfig = ensureProjectState(project);
+      let nextStatus = projectStatus(project, projectConfig);
+      const decision = decidePostWntdAction(project, projectConfig, nextStatus);
+      if (decision.shouldCleanup) {
+        cleanupResolvedWntdArtifacts(project);
+        projectConfig = ensureProjectState(project);
+        nextStatus = projectStatus(project, projectConfig);
+      }
       const runtimeConfigChanged = JSON.stringify(configBeforeWntd) !== JSON.stringify(runtimeControlSnapshot(projectConfig));
-      const nextStatus = projectStatus(project, projectConfig);
-      const decision = decidePostWntdAction(project, nextStatus);
       const decidedAt = new Date().toISOString();
+      const currentWntd = normalizeWntdState(projectConfig.wntd);
+      const runtimeConfigDecision = currentWntd.runtime_config_change_requested === null
+        ? (runtimeConfigChanged ? true : null)
+        : currentWntd.runtime_config_change_requested;
       const statePatch = {
         last_reason: pendingWntdReason,
-        continue_after_resolved: decision.action !== 'stop',
-        continue_decided_at: decidedAt,
-        runtime_config_change_requested: runtimeConfigChanged,
-        runtime_config_decided_at: decidedAt,
+        continue_after_resolved: currentWntd.continue_after_resolved,
+        continue_decided_at: currentWntd.continue_after_resolved === null
+          ? null
+          : (currentWntd.continue_decided_at || decidedAt),
+        runtime_config_change_requested: runtimeConfigDecision,
+        runtime_config_decided_at: runtimeConfigDecision === null
+          ? null
+          : (currentWntd.runtime_config_decided_at || decidedAt),
+        runtime_config_updated_at: currentWntd.runtime_config_updated_at,
         last_finished_at: decidedAt,
       };
-      if (runtimeConfigChanged) {
+      if (runtimeConfigChanged && !statePatch.runtime_config_updated_at) {
         statePatch.runtime_config_updated_at = decidedAt;
       }
-      projectConfig = setWntdState(project, decision.action === 'stop'
+      projectConfig = setWntdState(project, (decision.action === 'stop' || decision.action === 'pause')
         ? {
             ...statePatch,
             status: 'blocked',
@@ -1114,7 +1160,7 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
         nextStatus,
         decision: decision.action,
       });
-      if (decision.action === 'stop') {
+      if (decision.action === 'stop' || decision.action === 'pause') {
         return;
       }
 

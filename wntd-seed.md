@@ -34,8 +34,10 @@ AutoFish runtime context 会提供这些绝对路径：
 - 先调用 `EnterPlanMode`。
 - 对每个未解决 checkbox 逐项确认：是否已完成、依据/运行结果、用户决策、仍缺什么。
 - 优先用 `AskUserQuestion` 收集单选/多选决策；需要日志、命令输出或截图时，明确要求用户提供。
+- 当阻塞项已可收束时，必须在 plan mode 末尾专门确认两类决策：
+  1. 是否继续自动运行。
+  2. 是否需要调整运行配置；如需要，逐项确认 `max_rounds`、`max_turns_per_round`、`max_budget_per_round_usd`、`runtime.max_duration_minutes`、`runtime.stop_at` 的新值或保持不变。
 - 在 plan file 中整理准备写回的草案：WNTD 勾选/保留项、要同步到 `project.md` 的约束或结论、要更新的 `config.json` 字段。
-
 ### 阶段 3：先展示草案，再等明确批准
 - 草案准备好后，调用 `ExitPlanMode` 请求用户批准。
 - 退出 plan mode 后，用普通会话按文件列出准备写回的内容。
@@ -44,5 +46,7 @@ AutoFish runtime context 会提供这些绝对路径：
 ### 阶段 4：写回并结束
 - 先写 `WhatNeedToDo.md`；必要时同步 `project.md`；仅在用户明确要求时修改 `config.json`。
 - 已解决项改成 `- [x]`；未解决项保留 `- [ ]`，并写清楚仍缺的验证、决策或输入。
-- 若用户未完成必要验证、仍有未决信息、或拒绝继续，必须保持 blocked 状态，不得伪装成“已解决”。
-- 写回后总结：哪些项已解决，哪些项仍 blocked；然后停止，不进入业务开发。
+- 若用户已对“是否继续自动运行”给出明确答案，写回 `config.json` 的 `wntd.continue_after_resolved` 与 `wntd.continue_decided_at`。
+- 若用户已对“是否需要调整运行配置”给出明确答案，写回 `config.json` 的 `wntd.runtime_config_change_requested` 与 `wntd.runtime_config_decided_at`；若实际改动了 `max_rounds`、`max_turns_per_round`、`max_budget_per_round_usd`、`runtime.max_duration_minutes`、`runtime.stop_at`，同时更新对应字段，并写回 `wntd.runtime_config_updated_at`。
+- 若用户未完成必要验证、仍有未决信息、或拒绝继续，必须保持 blocked 状态，不得伪装成“已解决”。这种情况下，`WhatNeedToDo.md` 里至少保留一个 `- [ ]` 项，明确写出仍缺的验证、未决信息，或“用户选择暂停自动运行，待下次确认继续”之类的后续动作。
+- 写回后总结：哪些项已解决，哪些项仍 blocked；是否继续自动运行；是否修改了运行配置；然后停止，不进入业务开发。
