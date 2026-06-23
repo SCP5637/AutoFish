@@ -446,6 +446,19 @@ AutoFish 的安全防线分为两层：内层是 CC 自带的 `--permission-mode
 □ 9.  不满意 → git reset --hard <checkpoint> 回滚，分析原因，调整 auto-prompt.md
 ```
 
+### prompt 调整后的 token 对照法
+
+当你改了 `auto-prompt.md`、WNTD prompt 或 `project.md` 边界后，按这个顺序对照：
+
+```bash
+□ 1. 读 auto-log.txt，记下 `Prompt: <chars>`
+□ 2. 记下首个同类 round 的 `Round N tokens: in=... cache_hit=... cost=...`
+□ 3. 做 prompt 调整
+□ 4. 用 fresh session / `[RESET]` 后首轮再记一组
+□ 5. 比 `prompt chars`、`in`、`cost`；`cache_hit` 只作辅证
+□ 6. auto-log.txt 下次顶层 run 会清空，重跑前先把这几行抄走
+```
+
 ### 常见验收结果
 
 | 情况 | 处理方式 |
