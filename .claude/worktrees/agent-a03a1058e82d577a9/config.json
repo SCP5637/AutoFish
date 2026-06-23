@@ -1,0 +1,77 @@
+{
+  "_comment": "AutoFish 根默认配置模板。项目运行态会复制到 state/projects/<id>/config.json。",
+  "project_dir": "./",
+  "max_turns_per_round": 50,
+  "max_budget_per_round_usd": 5.00,
+  "max_rounds": 200,
+  "sleep_between_rounds_sec": 5,
+  "bootstrap": {
+    "schema_version": 1,
+    "status": "not_started",
+    "phase": 0,
+    "project_doc_confirmed": false,
+    "config_decision": "pending",
+    "confirmed_at": null,
+    "confirmed_by": null,
+    "project_doc_source": "none",
+    "last_started_at": null,
+    "last_updated_at": null
+  },
+  "session": {
+    "_comment": "会话管理。rebuild_strategy 控制何时放弃当前会话、启动全新 CC 会话。",
+    "rebuild_strategy": {
+      "mode": "any",
+      "mode_comment": "'any' = 任意条件满足即重建 | 'all' = 所有启用条件同时满足才重建",
+      "every_n_rounds": null,
+      "every_n_rounds_comment": "每 N 轮后重建会话。null = 禁用此条件。示例: 5",
+      "context_ratio_threshold": null,
+      "context_ratio_threshold_comment": "上下文使用率阈值 (0.0~1.0)。null = 禁用。示例: 0.8 表示上下文使用超80%时重建",
+      "respect_task_markers": true,
+      "respect_task_markers_comment": "是否遵守 project.md 中的 [RESET] 标记（在标记处重建会话）"
+    }
+  },
+  "runtime": {
+    "_comment": "运行时长控制。两个条件以先到者为准。",
+    "max_duration_minutes": null,
+    "max_duration_minutes_comment": "最大运行时长（分钟）。null = 无限制。示例: 480 表示8小时后停止",
+    "stop_at": null,
+    "stop_at_comment": "定时停止时间 (HH:MM 24小时制，本地时间)。null = 禁用。示例: '06:00' 表示早上6点停止"
+  },
+  "checkpoint": {
+    "mode": "auto",
+    "mode_comment": "'auto' = git 项目做 checkpoint，非 git 项目跳过 | 'none' = 全部跳过 checkpoint"
+  },
+  "plugins": {
+    "_comment": "插件/安全钩子管理。",
+    "required": [],
+    "required_comment": "强制插件列表。缺失则拒绝启动。示例: ['cc-safe-setup']",
+    "optional": ["cc-safe-setup"],
+    "optional_comment": "可选插件列表。缺失仅警告，继续运行。",
+    "auto_install_missing": false,
+    "auto_install_missing_comment": "是否自动安装缺失的可选插件（仅限 npm 包）",
+    "check_on_startup": true,
+    "check_on_startup_comment": "启动时是否检查插件状态",
+    "open_install_assistant_on_missing": true,
+    "open_install_assistant_on_missing_comment": "缺少关键插件时是否打开 Claude 安装助手窗口",
+    "doctor_on_startup": false,
+    "doctor_on_startup_comment": "是否在启动时执行 `npx cc-safe-setup --doctor` 做额外验证"
+  },
+  "display": {
+    "_comment": "显示选项。",
+    "show_cc_window": false,
+    "show_cc_window_comment": "是否打开独立的 CC 输出监察窗口（不影响实时进度）",
+    "stream_realtime_progress": true,
+    "stream_realtime_progress_comment": "是否使用 stream-json 实时输出 CC 进度到主终端"
+  },
+  "project_validation": {
+    "_comment": "启动时项目文档校验。",
+    "enabled": true,
+    "enabled_comment": "是否启用校验。false = 跳过所有校验（不推荐）",
+    "required_docs": ["project.md"],
+    "required_docs_comment": "必须存在的文档文件列表（相对于项目根目录或 state/）",
+    "required_sections": ["技术栈", "任务清单"],
+    "required_sections_comment": "project.md 中必须包含的章节标题（二级标题 ##）",
+    "task_format": "- [ ]",
+    "task_format_comment": "任务行的必须格式。至少需要一行匹配此格式才视为有效任务清单"
+  }
+}

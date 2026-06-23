@@ -41,22 +41,6 @@ const DEFAULT_BOOTSTRAP = Object.freeze({
   last_updated_at: null,
 });
 
-const DEFAULT_WNTD = Object.freeze({
-  schema_version: 1,
-  status: 'idle',
-  last_reason: null,
-  continue_after_resolved: null,
-  continue_decided_at: null,
-  runtime_config_change_requested: null,
-  runtime_config_decided_at: null,
-  runtime_config_updated_at: null,
-  last_requested_at: null,
-  last_started_at: null,
-  last_finished_at: null,
-  last_blocked_at: null,
-  last_resolved_at: null,
-});
-
 const COLOR = buildColorPalette();
 
 main().catch((error) => {
@@ -111,23 +95,31 @@ async function main() {
   const pluginReport = checkPluginPreflight(projectConfig);
   printPluginPreflight(pluginReport);
 
-  const launchPlan = resolveProjectLaunchPlan(selection, projectConfig, pluginReport);
-  if (launchPlan.type === 'safe-setup') {
+  if (pluginReport.shouldBlock || pluginReport.shouldOpenAssistant) {
     const launched = openSafeSetupWindow(selection, pluginReport);
     printSafeSetupLaunchResult(launched, pluginReport, selection);
     return;
   }
 
-  if (launchPlan.type === 'bootstrap') {
-    projectConfig = markBootstrapLaunch(selection, projectConfig, launchPlan.mode);
-    const launched = openBootstrapWindow(selection, projectConfig, launchPlan.mode, launchPlan.reason);
-    printBootstrapLaunchResult(selection, projectConfig, launched, launchPlan.reason);
+  if (!fs.existsSync(selection.projectDoc)) {
+    const reason = 'project.md missing';
+    projectConfig = markBootstrapLaunch(selection, projectConfig, 'new');
+    const launched = openBootstrapWindow(selection, projectConfig, 'new', reason);
+    printBootstrapLaunchResult(selection, projectConfig, launched, reason);
     return;
   }
 
-  const initialWntdReason = launchPlan.type === 'wntd' ? launchPlan.reason : null;
+  if (!isBootstrapConfirmed(projectConfig)) {
+    const reason = bootstrapReason(projectConfig);
+    projectConfig = markBootstrapLaunch(selection, projectConfig, 'review');
+    const launched = openBootstrapWindow(selection, projectConfig, 'review', reason);
+    printBootstrapLaunchResult(selection, projectConfig, launched, reason);
+    return;
+  }
+
   ensureRuntimeFiles(selection);
-  await runProjectWithWntd(selection, projectConfig, initialWntdReason);
+  maybeOpenMonitorWindow(selection);
+  await runLoop(selection, projectConfig);
 }
 
 async function selectProject(registry) {
@@ -425,7 +417,6 @@ function normalizeProjectConfig(config, project) {
   normalized.runtime_dir = project.runtimeDir;
   normalized.project_id = project.id;
   normalized.bootstrap = normalizeBootstrapState(normalized.bootstrap, fs.existsSync(project.projectDoc));
-  normalized.wntd = normalizeWntdState(normalized.wntd);
   return normalized;
 }
 
@@ -439,21 +430,6 @@ function normalizeBootstrapState(currentBootstrap, hasProjectDoc) {
   }
 
   return bootstrap;
-}
-
-function normalizeWntdState(currentWntd) {
-  const wntd = { ...DEFAULT_WNTD, ...(currentWntd || {}) };
-  const allowedStatus = new Set(['idle', 'pending', 'in_progress', 'resolved', 'blocked']);
-  if (!allowedStatus.has(wntd.status)) {
-    wntd.status = 'idle';
-  }
-  if (typeof wntd.continue_after_resolved !== 'boolean') {
-    wntd.continue_after_resolved = null;
-  }
-  if (typeof wntd.runtime_config_change_requested !== 'boolean') {
-    wntd.runtime_config_change_requested = null;
-  }
-  return wntd;
 }
 
 function maybeImportRootProjectDoc(project, projectConfig) {
@@ -497,31 +473,6 @@ function setBootstrapState(project, patch, baseConfig = null) {
   return updatedConfig;
 }
 
-function setWntdState(project, patch, baseConfig = null) {
-  const currentConfig = baseConfig || ensureProjectState(project);
-  const updatedConfig = mergeDeep(currentConfig, {
-    wntd: {
-      ...normalizeWntdState(currentConfig.wntd),
-      ...patch,
-    },
-  });
-
-  writeJson(project.configFile, updatedConfig);
-  return updatedConfig;
-}
-
-function runtimeControlSnapshot(config) {
-  return {
-    max_rounds: config.max_rounds ?? null,
-    max_turns_per_round: config.max_turns_per_round ?? null,
-    max_budget_per_round_usd: config.max_budget_per_round_usd ?? null,
-    runtime: {
-      max_duration_minutes: config.runtime?.max_duration_minutes ?? null,
-      stop_at: config.runtime?.stop_at ?? null,
-    },
-  };
-}
-
 function markBootstrapLaunch(project, projectConfig, mode) {
   const hasProjectDoc = fs.existsSync(project.projectDoc);
   const phase = !hasProjectDoc ? 1 : (!projectConfig.bootstrap.project_doc_confirmed ? 4 : 5);
@@ -532,163 +483,6 @@ function markBootstrapLaunch(project, projectConfig, mode) {
     config_decision: hasProjectDoc ? projectConfig.bootstrap.config_decision : 'pending',
   }, projectConfig);
 }
-
-function resolveProjectLaunchPlan(project, projectConfig, pluginReport) {
-  if (pluginReport.shouldBlock || pluginReport.shouldOpenAssistant) {
-    return { type: 'safe-setup' };
-  }
-
-  if (!fs.existsSync(project.projectDoc)) {
-    return {
-      type: 'bootstrap',
-      mode: 'new',
-      reason: 'project.md missing',
-    };
-  }
-
-  if (!isBootstrapConfirmed(projectConfig)) {
-    return {
-      type: 'bootstrap',
-      mode: 'review',
-      reason: bootstrapReason(projectConfig),
-    };
-  }
-
-  const wntdReason = blockedInteractionReason(project);
-  if (wntdReason) {
-    return {
-      type: 'wntd',
-      reason: wntdReason,
-    };
-  }
-
-  return { type: 'run-loop' };
-}
-
-function blockedInteractionReason(project) {
-  const normalized = normalizeProjectRecord(project);
-  const blockedFile = path.join(normalized.runtimeDir, 'task-blocked.txt');
-  if (fs.existsSync(blockedFile) && fs.readFileSync(blockedFile, 'utf8').includes('ALL_BLOCKED')) {
-    return 'task-blocked.txt contains ALL_BLOCKED';
-  }
-
-  if (fs.existsSync(path.join(normalized.runtimeDir, 'WhatNeedToDo.md'))) {
-    return 'WhatNeedToDo.md already exists';
-  }
-
-  return null;
-}
-
-function hasBlockedInteraction(project) {
-  return blockedInteractionReason(project) !== null;
-}
-
-function readWntdChecklistState(project) {
-  const normalized = normalizeProjectRecord(project);
-  const wntdFile = path.join(normalized.runtimeDir, 'WhatNeedToDo.md');
-  if (!fs.existsSync(wntdFile)) {
-    return null;
-  }
-
-  const lines = fs.readFileSync(wntdFile, 'utf8').split(/\r?\n/);
-  let inBlockedSection = false;
-  let unresolved = 0;
-  let resolved = 0;
-
-  for (const line of lines) {
-    if (!inBlockedSection) {
-      if (line.trim() === '## 阻塞任务清单') {
-        inBlockedSection = true;
-      }
-      continue;
-    }
-
-    if (/^##\s/.test(line)) {
-      break;
-    }
-
-    if (/^- \[x\]/.test(line)) {
-      resolved += 1;
-    } else if (/^- \[ \]/.test(line)) {
-      unresolved += 1;
-    }
-  }
-
-  return { resolved, unresolved };
-}
-
-function cleanupResolvedWntdArtifacts(project) {
-  const normalized = normalizeProjectRecord(project);
-  const wntdFile = path.join(normalized.runtimeDir, 'WhatNeedToDo.md');
-  try {
-    fs.unlinkSync(wntdFile);
-  } catch {}
-
-  const blockedFile = path.join(normalized.runtimeDir, 'task-blocked.txt');
-  if (!fs.existsSync(blockedFile)) {
-    return;
-  }
-
-  const nextContent = fs.readFileSync(blockedFile, 'utf8')
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== 'ALL_BLOCKED')
-    .join('\n')
-    .replace(/\n+$/, '');
-
-  fs.writeFileSync(blockedFile, nextContent ? `${nextContent}\n` : '', 'utf8');
-}
-
-function decidePostWntdAction(project, projectConfig, nextStatus) {
-  const wntdState = readWntdChecklistState(project);
-  const wntdConfig = normalizeWntdState(projectConfig.wntd);
-  const allResolved = Boolean(wntdState && wntdState.unresolved === 0 && wntdState.resolved > 0);
-
-  if (allResolved) {
-    if (wntdConfig.continue_after_resolved === true) {
-      return { action: 'continue', wntdState, shouldCleanup: true };
-    }
-    if (wntdConfig.continue_after_resolved === false) {
-      return { action: 'pause', wntdState, shouldCleanup: false };
-    }
-    return { action: 'stop', wntdState, shouldCleanup: false };
-  }
-
-  if (nextStatus !== 'blocked') {
-    return { action: 'continue', wntdState, shouldCleanup: false };
-  }
-
-  return { action: 'stop', wntdState, shouldCleanup: false };
-}
-
-function launchClaudeWindow(project, options) {
-  const {
-    title,
-    prompt,
-    scriptPath,
-    env = {},
-    missingClaudeHint,
-    exitHint,
-    waitForExit = false,
-  } = options;
-
-  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = '${psSingleQuote(title)}'\n$sessionPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\n${Object.entries(env).map(([key, value]) => `$env:${key} = '${psSingleQuote(value)}'`).join('\n')}\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host '${psSingleQuote(missingClaudeHint)}' -ForegroundColor DarkYellow\n  return\n}\n& claude -n '${psSingleQuote(title)}' $sessionPrompt\nWrite-Host ''\nWrite-Host '${psSingleQuote(exitHint)}' -ForegroundColor DarkYellow\n`;
-  fs.writeFileSync(scriptPath, script, 'utf8');
-
-  const startArgs = ['/c', 'start', ''];
-  if (waitForExit) {
-    startArgs.push('/wait');
-  }
-  startArgs.push('powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath);
-
-  const result = spawnSync('cmd.exe', startArgs, {
-    cwd: project.projectDir,
-    env: process.env,
-    windowsHide: false,
-  });
-
-  return result.status === 0 && !result.error;
-}
-
 
 function ensureRuntimeFiles(project) {
   ensureDir(project.runtimeDir);
@@ -929,13 +723,16 @@ function openSafeSetupWindow(project, pluginReport) {
   ].join('\n');
 
   const scriptPath = path.join(project.stateDir, 'safe-setup-launch.ps1');
-  return launchClaudeWindow(project, {
-    title: `AutoFish Safety Hooks Setup - ${project.name}`,
-    prompt,
-    scriptPath,
-    missingClaudeHint: 'Install Claude Code first, then rerun AutoFish.',
-    exitHint: 'Safety setup session ended. Restart Claude Code / AutoFish if hooks changed.',
+  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = 'AutoFish Safety Hooks Setup - ${psSingleQuote(project.name)}'\n$setupPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host 'Install Claude Code first, then rerun AutoFish.' -ForegroundColor DarkYellow\n  return\n}\n& claude -n 'AutoFish Safety Hooks Setup - ${psSingleQuote(project.name)}' $setupPrompt\nWrite-Host ''\nWrite-Host 'Safety setup session ended. Restart Claude Code / AutoFish if hooks changed.' -ForegroundColor DarkYellow\n`;
+  fs.writeFileSync(scriptPath, script, 'utf8');
+
+  const result = spawnSync('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+    cwd: project.projectDir,
+    env: process.env,
+    windowsHide: false,
   });
+
+  return result.status === 0 && !result.error;
 }
 
 function printSafeSetupLaunchResult(launched, report, project) {
@@ -981,205 +778,16 @@ function openBootstrapWindow(project, projectConfig, mode, reason) {
   const prompt = `${bootstrapSeed}\n## AutoFish runtime context\n\n- AUTOFISH_ROOT: ${project.root}\n- AUTOFISH_PROJECT_ID: ${project.id}\n- AUTOFISH_PROJECT_DIR: ${project.projectDir}\n- AUTOFISH_STATE_DIR: ${project.stateDir}\n- AUTOFISH_RUNTIME_DIR: ${project.runtimeDir}\n- AUTOFISH_PROJECT_DOC: ${project.projectDoc}\n- AUTOFISH_PROJECT_CONFIG: ${project.configFile}\n- AUTOFISH_BOOTSTRAP_MODE: ${mode}\n- AUTOFISH_BOOTSTRAP_STATUS: ${projectConfig.bootstrap.status}\n- BOOTSTRAP_REASON: ${reason}\n\n## Required first actions\n\n1. Read: ${toPosixPath(path.join(ROOT, 'PROJECT_SPEC.md'))}\n2. Read target project README / build config / test config / key entry files\n3. Phase 1 stays in normal conversation: facts only, no plan mode, no file writes.\n4. Phases 2-4 must run through plan mode: enter in phase 2, stay there through phase 4 draft review, then exit before waiting for explicit \"确认生成 project.md\".\n5. Do not write ${project.projectDoc} before phase 4 explicit confirmation.\n6. Do not write ${project.configFile} before phase 5 config decision.\n7. After bootstrap is complete, stop. Do not modify business code.\n`;
 
   const scriptPath = path.join(project.stateDir, 'bootstrap-launch.ps1');
-  return launchClaudeWindow(project, {
-    title: `AutoFish Bootstrap - ${project.name}`,
-    prompt,
-    scriptPath,
-    env: {
-      AUTOFISH_PROJECT_CONFIG: project.configFile,
-      AUTOFISH_PROJECT_DOC: project.projectDoc,
-      AUTOFISH_BOOTSTRAP_MODE: mode,
-      AUTOFISH_BOOTSTRAP_STATUS: projectConfig.bootstrap.status,
-    },
-    missingClaudeHint: 'Close this window after fixing PATH, then rerun AutoFish.',
-    exitHint: 'Bootstrap session ended. Return to AutoFish when project.md/config confirmation is done.',
+  const script = `$ErrorActionPreference = 'Stop'\n$Host.UI.RawUI.WindowTitle = 'AutoFish Bootstrap - ${psSingleQuote(project.name)}'\n$bootstrapPrompt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(prompt, 'utf8').toString('base64')}'))\n$env:AUTOFISH_PROJECT_CONFIG = '${psSingleQuote(project.configFile)}'\n$env:AUTOFISH_PROJECT_DOC = '${psSingleQuote(project.projectDoc)}'\n$env:AUTOFISH_BOOTSTRAP_MODE = '${psSingleQuote(mode)}'\n$env:AUTOFISH_BOOTSTRAP_STATUS = '${psSingleQuote(projectConfig.bootstrap.status)}'\nSet-Location -LiteralPath '${psSingleQuote(project.projectDir)}'\nif (-not (Get-Command claude -ErrorAction SilentlyContinue)) {\n  Write-Host '[ERROR] claude not found in PATH.' -ForegroundColor Red\n  Write-Host 'Close this window after fixing PATH, then rerun AutoFish.' -ForegroundColor DarkYellow\n  return\n}\n& claude -n 'AutoFish Bootstrap - ${psSingleQuote(project.name)}' $bootstrapPrompt\nWrite-Host ''\nWrite-Host 'Bootstrap session ended. Return to AutoFish when project.md/config confirmation is done.' -ForegroundColor DarkYellow\n`;
+  fs.writeFileSync(scriptPath, script, 'utf8');
+
+  const result = spawnSync('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+    cwd: project.projectDir,
+    env: process.env,
+    windowsHide: false,
   });
-}
 
-function openWntdWindow(project, reason) {
-  const wntdFile = toPosixPath(path.join(project.runtimeDir, 'WhatNeedToDo.md'));
-  const blockedFile = toPosixPath(path.join(project.runtimeDir, 'task-blocked.txt'));
-  const doneFile = toPosixPath(path.join(project.runtimeDir, 'task-done.txt'));
-  const logFile = toPosixPath(path.join(project.runtimeDir, 'auto-log.txt'));
-  const wntdSeed = fs.readFileSync(path.join(ROOT, 'wntd-seed.md'), 'utf8');
-  const prompt = `${wntdSeed}\n## AutoFish runtime context\n\n- AUTOFISH_ROOT: ${project.root}\n- AUTOFISH_PROJECT_ID: ${project.id}\n- AUTOFISH_PROJECT_DIR: ${project.projectDir}\n- AUTOFISH_STATE_DIR: ${project.stateDir}\n- AUTOFISH_RUNTIME_DIR: ${project.runtimeDir}\n- AUTOFISH_PROJECT_DOC: ${project.projectDoc}\n- AUTOFISH_PROJECT_CONFIG: ${project.configFile}\n- AUTOFISH_WNTD_FILE: ${wntdFile}\n- AUTOFISH_BLOCKED_FILE: ${blockedFile}\n- AUTOFISH_DONE_FILE: ${doneFile}\n- AUTOFISH_LOG_FILE: ${logFile}\n- WNTD_REASON: ${reason}\n\n## Required first actions\n\n1. Read ${wntdFile} if it exists.
-2. Read ${project.projectDoc} and ${project.configFile}.
-3. Enter plan mode before asking blocked-resolution questions.
-4. Before leaving plan mode, explicitly ask whether to continue automation and whether to change runtime config (max_rounds, max_turns_per_round, max_budget_per_round_usd, runtime.max_duration_minutes, runtime.stop_at).
-5. After ExitPlanMode, show draft write-back grouped by file before any edit.
-6. Do not write any file until user explicitly confirms write-back.
-7. If user confirms those decisions, write them back into ${project.configFile} under wntd and runtime fields as needed.
-8. Stop after WNTD write-back or after confirming remaining blocked items.\n`;
-
-  const scriptPath = path.join(project.stateDir, 'wntd-launch.ps1');
-  return launchClaudeWindow(project, {
-    title: `AutoFish WNTD - ${project.name}`,
-    prompt,
-    scriptPath,
-    env: {
-      AUTOFISH_PROJECT_CONFIG: project.configFile,
-      AUTOFISH_PROJECT_DOC: project.projectDoc,
-      AUTOFISH_WNTD_FILE: wntdFile,
-      AUTOFISH_BLOCKED_FILE: blockedFile,
-      AUTOFISH_DONE_FILE: doneFile,
-      AUTOFISH_LOG_FILE: logFile,
-      AUTOFISH_WNTD_REASON: reason,
-    },
-    missingClaudeHint: 'Close this window after fixing PATH, then rerun AutoFish.',
-    exitHint: 'WNTD session ended. Close this window to let AutoFish re-check blocked state.',
-    waitForExit: true,
-  });
-}
-
-function printWntdLaunchResult(project, options) {
-  const {
-    reason,
-    launched = true,
-    phase = 'result',
-    nextStatus = null,
-    decision = 'continue',
-  } = options;
-
-  console.log(colorize('warn', '=== WNTD review required ==='));
-  console.log(colorize('note', `Reason:      ${reason}`));
-  console.log(colorize('note', `Project:     ${project.projectDir}`));
-  console.log(colorize('note', `WNTD file:   ${toPosixPath(path.join(project.runtimeDir, 'WhatNeedToDo.md'))}`));
-  console.log(colorize('note', `Blocked:     ${toPosixPath(path.join(project.runtimeDir, 'task-blocked.txt'))}`));
-  if (nextStatus) {
-    console.log(colorize('key', `Next status: ${nextStatus}`));
-  }
-  console.log('');
-
-  if (phase === 'waiting') {
-    console.log(colorize('run', 'Opening Claude WNTD window.'));
-    console.log(colorize('note', 'AutoFish will wait until that window closes, then re-check runtime state.'));
-  } else if (!launched) {
-    console.log(colorize('error', '[ERROR] Failed to open Claude WNTD window.'));
-    console.log(colorize('note', `WNTD script: ${toPosixPath(path.join(project.stateDir, 'wntd-launch.ps1'))}`));
-    console.log(colorize('note', 'Run that script manually or fix terminal/permissions, then rerun AutoFish.'));
-  } else if (decision === 'pause') {
-    console.log(colorize('run', 'WNTD resolved blocked items but user chose to pause automation.'));
-    console.log(colorize('note', 'AutoFish will stop here. Rerun AutoFish later to resume with current config.'));
-  } else if (nextStatus === 'blocked') {
-    console.log(colorize('warn', 'Blocked items still remain after WNTD session.'));
-    console.log(colorize('note', 'Review WhatNeedToDo.md / task-blocked.txt, then rerun AutoFish after more input.'));
-  } else {
-    console.log(colorize('run', 'WNTD session cleared blocked state.'));
-    console.log(colorize('note', 'AutoFish will continue with normal run-loop.'));
-  }
-
-  console.log('');
-}
-
-async function runProjectWithWntd(project, projectConfig, initialWntdReason = null) {
-  let pendingWntdReason = initialWntdReason;
-  let monitorWindowChecked = false;
-
-  while (true) {
-    if (pendingWntdReason) {
-      const requestedAt = new Date().toISOString();
-      projectConfig = setWntdState(project, {
-        status: 'pending',
-        last_reason: pendingWntdReason,
-        last_requested_at: requestedAt,
-      }, projectConfig);
-      printWntdLaunchResult(project, {
-        reason: pendingWntdReason,
-        phase: 'waiting',
-      });
-
-      const configBeforeWntd = runtimeControlSnapshot(projectConfig);
-      projectConfig = setWntdState(project, {
-        status: 'in_progress',
-        last_reason: pendingWntdReason,
-        last_started_at: new Date().toISOString(),
-      }, projectConfig);
-
-      const launched = openWntdWindow(project, pendingWntdReason);
-      if (!launched) {
-        const blockedAt = new Date().toISOString();
-        projectConfig = setWntdState(project, {
-          status: 'blocked',
-          last_reason: pendingWntdReason,
-          continue_after_resolved: null,
-          continue_decided_at: null,
-          runtime_config_change_requested: null,
-          runtime_config_decided_at: null,
-          last_finished_at: blockedAt,
-          last_blocked_at: blockedAt,
-        }, projectConfig);
-        printWntdLaunchResult(project, {
-          reason: pendingWntdReason,
-          launched: false,
-        });
-        return;
-      }
-
-      projectConfig = ensureProjectState(project);
-      let nextStatus = projectStatus(project, projectConfig);
-      const decision = decidePostWntdAction(project, projectConfig, nextStatus);
-      if (decision.shouldCleanup) {
-        cleanupResolvedWntdArtifacts(project);
-        projectConfig = ensureProjectState(project);
-        nextStatus = projectStatus(project, projectConfig);
-      }
-      const runtimeConfigChanged = JSON.stringify(configBeforeWntd) !== JSON.stringify(runtimeControlSnapshot(projectConfig));
-      const decidedAt = new Date().toISOString();
-      const currentWntd = normalizeWntdState(projectConfig.wntd);
-      const runtimeConfigDecision = currentWntd.runtime_config_change_requested === null
-        ? (runtimeConfigChanged ? true : null)
-        : currentWntd.runtime_config_change_requested;
-      const statePatch = {
-        last_reason: pendingWntdReason,
-        continue_after_resolved: currentWntd.continue_after_resolved,
-        continue_decided_at: currentWntd.continue_after_resolved === null
-          ? null
-          : (currentWntd.continue_decided_at || decidedAt),
-        runtime_config_change_requested: runtimeConfigDecision,
-        runtime_config_decided_at: runtimeConfigDecision === null
-          ? null
-          : (currentWntd.runtime_config_decided_at || decidedAt),
-        runtime_config_updated_at: currentWntd.runtime_config_updated_at,
-        last_finished_at: decidedAt,
-      };
-      if (runtimeConfigChanged && !statePatch.runtime_config_updated_at) {
-        statePatch.runtime_config_updated_at = decidedAt;
-      }
-      projectConfig = setWntdState(project, (decision.action === 'stop' || decision.action === 'pause')
-        ? {
-            ...statePatch,
-            status: 'blocked',
-            last_blocked_at: decidedAt,
-          }
-        : {
-            ...statePatch,
-            status: 'resolved',
-            last_resolved_at: decidedAt,
-          }, projectConfig);
-      printWntdLaunchResult(project, {
-        reason: pendingWntdReason,
-        nextStatus,
-        decision: decision.action,
-      });
-      if (decision.action === 'stop' || decision.action === 'pause') {
-        return;
-      }
-
-      pendingWntdReason = null;
-    }
-
-    if (!monitorWindowChecked) {
-      maybeOpenMonitorWindow(project);
-      monitorWindowChecked = true;
-    }
-
-    await runLoop(project, projectConfig);
-    projectConfig = ensureProjectState(project);
-    pendingWntdReason = blockedInteractionReason(project);
-    if (!pendingWntdReason) {
-      return;
-    }
-  }
+  return result.status === 0 && !result.error;
 }
 
 async function runLoop(project, projectConfig) {
@@ -1270,7 +878,12 @@ function projectStatus(project, configOverride = null) {
     return 'complete';
   }
 
-  if (hasBlockedInteraction(normalized)) {
+  const blockedFile = path.join(normalized.runtimeDir, 'task-blocked.txt');
+  if (fs.existsSync(blockedFile) && fs.readFileSync(blockedFile, 'utf8').includes('ALL_BLOCKED')) {
+    return 'blocked';
+  }
+
+  if (fs.existsSync(path.join(normalized.runtimeDir, 'WhatNeedToDo.md'))) {
     return 'blocked';
   }
 
