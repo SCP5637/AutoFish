@@ -2,7 +2,7 @@
   "_comment": "AutoFish 根默认配置模板。项目运行态会复制到 state/projects/<id>/config.json。",
   "project_dir": "./",
   "max_turns_per_round": 50,
-  "max_budget_per_round_usd": 5.00,
+  "max_budget_per_round_usd": 20.00,
   "max_rounds": 200,
   "sleep_between_rounds_sec": 5,
   "bootstrap": {

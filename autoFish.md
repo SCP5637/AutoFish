@@ -340,6 +340,14 @@ cmake -B build && cmake --build build
 - **阶段状态来源**：`markBootstrapLaunch()` 只在启动前写 `bootstrap.phase`：无 `project.md` → `1`；文档未确认 → `4`；文档已确认但配置未决 → `5`。阶段 2/3 仍主要由 `bootstrap-seed.md` 约束，但现在要求阶段 2 进入 plan mode，并持续到阶段 4 草案审阅完成后退出。
 - **plan mode 接入点**：阶段 2~4 通过 `openBootstrapWindow()` 注入的 bootstrap prompt 进入 plan mode；阶段 1 与阶段 5 仍是普通会话；`runLoop()` 是独立正常开发路径，不受影响。
 
+### 5.2 WNTD / blocked 最小接入点
+
+- **状态识别入口（`autofish.js`）**：`hasBlockedInteraction()` 把两类信号统一折叠成 `blocked`：`task-blocked.txt` 包含 `ALL_BLOCKED`，或 runtime 目录已存在 `WhatNeedToDo.md`。`projectStatus()` 只负责状态展示；真正的启动分支仍由 `resolveProjectLaunchPlan()` / `runLoop()` 决定。
+- **独立窗口复用入口（`autofish.js`）**：`launchClaudeWindow()` 已把 PowerShell 脚本生成、`claude -n` 启动、PATH 检查、退出提示收敛成公共 helper。`openBootstrapWindow()` 与 `openSafeSetupWindow()` 都走这条路径，所以后续 WNTD 专窗只需新增 prompt、scriptPath 与少量 env。
+- **blocked 产物入口（`run-loop.sh`）**：`check_stop_conditions()` 在 `task-blocked.txt` 命中 `ALL_BLOCKED` 时停止本轮；连续 5 轮无进展也会补写 `ALL_BLOCKED`。两条路径最终都汇入 `generate_what_need_to_do()`，统一生成 `WhatNeedToDo.md`。
+- **续跑判定入口（`run-loop.sh`）**：`handle_what_need_to_do()` 在每次 run-loop 开始时先读现有 `WhatNeedToDo.md`，按 checkbox 统计已解决/未解决项；全解决则删 WNTD 并继续，未解决则保留 blocked 并退出。后续 WNTD 专窗只要回写同一批 runtime 文件，再次进入 `runLoop()` 就能复用这套续跑判定。
+- **最小改动结论**：Phase 1.3 只需在 `autofish.js` 的启动分支附近补 `wntd` 分支，并复用 `launchClaudeWindow()` 拉起专窗；`run-loop.sh` 保留 `generate_what_need_to_do()` / `handle_what_need_to_do()` 作为 runtime 状态读写面，不必重做 bootstrap 或主循环。
+
 ---
 
 ## 6. 停止条件
