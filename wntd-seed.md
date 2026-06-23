@@ -37,12 +37,16 @@ AutoFish runtime context 会提供这些绝对路径：
 - 当阻塞项已可收束时，必须在 plan mode 末尾专门确认两类决策：
   1. 是否继续自动运行。
   2. 是否需要调整运行配置；如需要，逐项确认 `max_rounds`、`max_turns_per_round`、`max_budget_per_round_usd`、`runtime.max_duration_minutes`、`runtime.stop_at` 的新值或保持不变。
+- 对用户在 WNTD 中确认的内容，必须区分：
+  1. 只影响本次写回的临时备注。
+  2. 会影响后续 AutoFish 轮次判断的长期信息，如任务约束、方案决策、运行前提、必须先做的验证、用户明确拒绝的方向。
+- 凡是属于长期信息的，必须准备同步回填到 `project.md`；不要只留在 `WhatNeedToDo.md`。
 - 在 plan file 中整理准备写回的草案：WNTD 勾选/保留项、要同步到 `project.md` 的约束或结论、要更新的 `config.json` 字段。
 ### 阶段 3：先展示草案，再等明确批准
 - 草案准备好后，调用 `ExitPlanMode` 请求用户批准。
 - 退出 plan mode 后，必须先按文件展示准备写回的草案，至少分成三段：
   1. `WhatNeedToDo.md` 准备勾选/保留/新增的项。
-  2. `project.md` 准备补充的约束、决策结果或运行前提（如果没有，要明确写“本次不改 project.md”）。
+  2. `project.md` 准备补充的约束、决策结果或运行前提（如果没有，要明确写“本次不改 project.md”）。这里必须直接列出准备写入 `project.md` 的具体条目或段落，而不是只说“会同步”。
   3. `config.json` 准备修改的 `wntd.*` 与运行配置字段（如果没有，要明确写“本次不改 config.json”）。
 - 展示草案时，必须明确要求用户回复“确认写回”或同义明确批准；没有这句，不得写任何文件。
 - 如果用户只确认其中一部分文件，只有被明确批准的文件可写，其他文件继续保持草案状态。
@@ -50,7 +54,9 @@ AutoFish runtime context 会提供这些绝对路径：
 ### 阶段 4：写回并结束
 - 先写 `WhatNeedToDo.md`；必要时同步 `project.md`；仅在用户明确要求时修改 `config.json`。
 - 已解决项改成 `- [x]`；未解决项保留 `- [ ]`，并写清楚仍缺的验证、决策或输入。
+- 若用户在 WNTD 中确认了会影响后续轮次的任务约束、决策结果或运行前提，且用户已批准对应草案，必须最小范围回填到 `project.md`，避免下轮再次因信息缺失阻塞。
+- 回填 `project.md` 时，只写真正会影响后续执行的长期信息；不要把临时对话、一次性日志内容、无后续价值的细节塞进去。
 - 若用户已对“是否继续自动运行”给出明确答案，写回 `config.json` 的 `wntd.continue_after_resolved` 与 `wntd.continue_decided_at`。
 - 若用户已对“是否需要调整运行配置”给出明确答案，写回 `config.json` 的 `wntd.runtime_config_change_requested` 与 `wntd.runtime_config_decided_at`；若实际改动了 `max_rounds`、`max_turns_per_round`、`max_budget_per_round_usd`、`runtime.max_duration_minutes`、`runtime.stop_at`，同时更新对应字段，并写回 `wntd.runtime_config_updated_at`。
 - 若用户未完成必要验证、仍有未决信息、或拒绝继续，必须保持 blocked 状态，不得伪装成“已解决”。这种情况下，`WhatNeedToDo.md` 里至少保留一个 `- [ ]` 项，明确写出仍缺的验证、未决信息，或“用户选择暂停自动运行，待下次确认继续”之类的后续动作。
-- 写回后总结：哪些项已解决，哪些项仍 blocked；是否继续自动运行；是否修改了运行配置；然后停止，不进入业务开发。
+- 写回后总结：哪些项已解决，哪些项仍 blocked；哪些结论已同步进 `project.md`；是否继续自动运行；是否修改了运行配置；然后停止，不进入业务开发。

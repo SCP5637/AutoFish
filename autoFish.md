@@ -253,6 +253,19 @@ C:\Users\<用户名>\.claude\
 - `auto-log.txt` 记录完整日志
 - 按 `Ctrl+C` 可随时停止（git checkpoint 已自动创建，可回滚）
 
+### blocked / WNTD 处理（Windows click-flow）
+
+1. `run-loop.sh` 遇到 `ALL_BLOCKED`，或 runtime 里已存在 `WhatNeedToDo.md` 时，AutoFish 会自动切到 blocked / WNTD 流程。
+2. **不要关闭原始 AutoFish 终端窗口**。它会等待 WNTD 专窗结束，再决定续跑还是停止。
+3. AutoFish 会自动打开独立的 Claude WNTD PowerShell 窗口；若窗口未拉起，手动运行 `state/projects/<project-id>/wntd-launch.ps1`。
+4. 在 WNTD 窗口中，Claude 会先读 `WhatNeedToDo.md`、`project.md`、`config.json`，进入 plan mode，逐项确认 blocked 项。
+5. WNTD 在写回前必须先按文件展示草案：`WhatNeedToDo.md`、必要的 `project.md`、可选的 `config.json`；只有你明确回复“确认写回”后才会落盘。
+6. 关闭 WNTD 窗口后，原始 AutoFish 终端会自动复检 runtime 状态：
+   - 全部解决 + 继续自动运行 → 直接恢复 run-loop
+   - 全部解决 + 暂停 → 当前 AutoFish 结束，稍后手动重启
+   - 仍有未解决项 / 缺验证 / 缺决策 → 保持 blocked，当前 AutoFish 结束
+7. **不要在 WNTD 专窗还开着时重复双击 `run-auto.bat` 或 `autoFish.bat`**，否则会并行启动第二个控制流程。
+
 ### 睡前操作
 
 ```bash
@@ -342,11 +355,13 @@ cmake -B build && cmake --build build
 
 ### 5.2 WNTD / blocked 最小接入点
 
-- **状态识别入口（`autofish.js`）**：`hasBlockedInteraction()` 把两类信号统一折叠成 `blocked`：`task-blocked.txt` 包含 `ALL_BLOCKED`，或 runtime 目录已存在 `WhatNeedToDo.md`。`projectStatus()` 只负责状态展示；真正的启动分支仍由 `resolveProjectLaunchPlan()` / `runLoop()` 决定。
-- **独立窗口复用入口（`autofish.js`）**：`launchClaudeWindow()` 已把 PowerShell 脚本生成、`claude -n` 启动、PATH 检查、退出提示收敛成公共 helper。`openBootstrapWindow()` 与 `openSafeSetupWindow()` 都走这条路径，所以后续 WNTD 专窗只需新增 prompt、scriptPath 与少量 env。
+- **状态识别入口（`autofish.js`）**：`hasBlockedInteraction()` 把两类信号统一折叠成 `blocked`：`task-blocked.txt` 包含 `ALL_BLOCKED`，或 runtime 目录已存在 `WhatNeedToDo.md`。命中时，AutoFish 不直接继续 run-loop，而是先走 WNTD 交互。
+- **独立窗口复用入口（`autofish.js`）**：`openWntdWindow()` 复用 `launchClaudeWindow()`，生成 `wntd-launch.ps1` 并打开独立 Claude WNTD PowerShell 窗口；主 AutoFish 终端会 `waitForExit`，直到专窗关闭再继续判断。
+- **WNTD 专窗职责（`wntd-seed.md`）**：WNTD 先读 `WhatNeedToDo.md` / `project.md` / `config.json`，进入 plan mode，逐项确认 blocked 项；末尾必须确认“是否继续自动运行”“是否调整运行配置”；若存在长期约束或运行前提，必须准备回填 `project.md`。
+- **写回门槛（`wntd-seed.md`）**：WNTD 必须先按文件展示 `WhatNeedToDo.md`、必要的 `project.md`、可选的 `config.json` 草案；只有用户明确回复“确认写回”后才允许落盘，也支持按文件部分批准。
 - **blocked 产物入口（`run-loop.sh`）**：`check_stop_conditions()` 在 `task-blocked.txt` 命中 `ALL_BLOCKED` 时停止本轮；连续 5 轮无进展也会补写 `ALL_BLOCKED`。两条路径最终都汇入 `generate_what_need_to_do()`，统一生成 `WhatNeedToDo.md`。
-- **续跑判定入口（`run-loop.sh`）**：`handle_what_need_to_do()` 在每次 run-loop 开始时先读现有 `WhatNeedToDo.md`，按 checkbox 统计已解决/未解决项；全解决则删 WNTD 并继续，未解决则保留 blocked 并退出。后续 WNTD 专窗只要回写同一批 runtime 文件，再次进入 `runLoop()` 就能复用这套续跑判定。
-- **最小改动结论**：Phase 1.3 只需在 `autofish.js` 的启动分支附近补 `wntd` 分支，并复用 `launchClaudeWindow()` 拉起专窗；`run-loop.sh` 保留 `generate_what_need_to_do()` / `handle_what_need_to_do()` 作为 runtime 状态读写面，不必重做 bootstrap 或主循环。
+- **续跑 / 暂停 / 保持 blocked（`autofish.js` + `run-loop.sh`）**：WNTD 专窗关闭后，AutoFish 重新读取 runtime 状态。全部解决且用户选择继续 → 清理 WNTD / blocked 标记并恢复 run-loop；全部解决但用户选择暂停 → 当前 AutoFish 结束，等待下次手动启动；仍有未解决项、缺验证或缺决策 → 保持 blocked 状态并结束当前流程。
+- **Windows click-flow 注意点**：WNTD 专窗打开后，不要关闭原始 AutoFish 终端，也不要重复双击 `run-auto.bat` / `autoFish.bat`。应在 WNTD 窗口完成确认并关闭后，再看原始终端是自动续跑还是结束等待。
 
 ---
 

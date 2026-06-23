@@ -1007,9 +1007,10 @@ function openWntdWindow(project, reason) {
 3. Enter plan mode before asking blocked-resolution questions.
 4. Before leaving plan mode, explicitly ask whether to continue automation and whether to change runtime config (max_rounds, max_turns_per_round, max_budget_per_round_usd, runtime.max_duration_minutes, runtime.stop_at).
 5. After ExitPlanMode, show draft write-back grouped by file before any edit.
-6. Do not write any file until user explicitly confirms write-back.
-7. If user confirms those decisions, write them back into ${project.configFile} under wntd and runtime fields as needed.
-8. Stop after WNTD write-back or after confirming remaining blocked items.\n`;
+6. Include exact project.md additions for any confirmed long-term constraints, decisions, or prerequisites that future AutoFish rounds need.
+7. Do not write any file until user explicitly confirms write-back.
+8. If user confirms those decisions, write them back into ${project.configFile} under wntd and runtime fields as needed.
+9. Stop after WNTD write-back or after confirming remaining blocked items.\n`;
 
   const scriptPath = path.join(project.stateDir, 'wntd-launch.ps1');
   return launchClaudeWindow(project, {
