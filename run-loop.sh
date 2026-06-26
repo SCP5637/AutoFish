@@ -368,7 +368,21 @@ validate_project_doc() {
 
     local task_format
     task_format=$(config_val "project_validation.task_format" "- [ ]")
+
     if ! grep -qF -e "$task_format" "$PROJECT_DOC_FILE"; then
+        if grep -qF -e "- [x]" "$PROJECT_DOC_FILE"; then
+            local history_dir="$STATE_DIR/History"
+            mkdir -p "$history_dir"
+            local ts
+            ts=$(date '+%Y%m%d-%H%M%S')
+            local archived_name="project-${ts}.md"
+            mv "$PROJECT_DOC_FILE" "$history_dir/$archived_name"
+            log_key "All tasks complete. Archived project.md -> History/$archived_name"
+            [ -f "$DONE_FILE" ] && cp "$DONE_FILE" "$history_dir/task-done-${ts}.txt" 2>/dev/null || true
+            [ -f "$BLOCKED_FILE" ] && cp "$BLOCKED_FILE" "$history_dir/task-blocked-${ts}.txt" 2>/dev/null || true
+            log_key "Project finished. Restart AutoFish to begin a new bootstrap."
+            exit 0
+        fi
         log_error "[FATAL] No tasks found in project.md (format: '$task_format')"
         return 1
     fi

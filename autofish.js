@@ -83,51 +83,59 @@ async function main() {
     return;
   }
 
-  let projectConfig = ensureProjectState(selection);
-  projectConfig = maybeImportRootProjectDoc(selection, projectConfig);
-  projectConfig = ensureProjectState(selection, projectConfig);
+  let projectConfig;
+  while (true) {
+    projectConfig = ensureProjectState(selection);
+    projectConfig = maybeImportRootProjectDoc(selection, projectConfig);
+    projectConfig = ensureProjectState(selection, projectConfig);
 
-  const initialStatus = projectStatus(selection, projectConfig);
-  if (fs.existsSync(selection.projectDoc) && initialStatus === 'needs-confirmation' && projectConfig.bootstrap.status === 'not_started') {
-    projectConfig = setBootstrapState(selection, {
-      status: 'awaiting_project_confirmation',
-      phase: 4,
-      project_doc_confirmed: false,
-      config_decision: 'pending',
-      confirmed_at: null,
-      confirmed_by: null,
-      project_doc_source: projectConfig.bootstrap.project_doc_source === 'none' ? 'manual_existing' : projectConfig.bootstrap.project_doc_source,
-    }, projectConfig);
+    const initialStatus = projectStatus(selection, projectConfig);
+    if (fs.existsSync(selection.projectDoc) && initialStatus === 'needs-confirmation' && projectConfig.bootstrap.status === 'not_started') {
+      projectConfig = setBootstrapState(selection, {
+        status: 'awaiting_project_confirmation',
+        phase: 4,
+        project_doc_confirmed: false,
+        config_decision: 'pending',
+        confirmed_at: null,
+        confirmed_by: null,
+        project_doc_source: projectConfig.bootstrap.project_doc_source === 'none' ? 'manual_existing' : projectConfig.bootstrap.project_doc_source,
+      }, projectConfig);
+    }
+
+    registry.lastProjectId = selection.id;
+    selection.lastSelectedAt = new Date().toISOString();
+    upsertProject(registry, selection);
+    saveRegistry(registry);
+
+    const status = projectStatus(selection, projectConfig);
+    printProjectSummary(selection, projectConfig, status);
+
+    const pluginReport = checkPluginPreflight(projectConfig);
+    printPluginPreflight(pluginReport);
+
+    const launchPlan = resolveProjectLaunchPlan(selection, projectConfig, pluginReport);
+    if (launchPlan.type === 'safe-setup') {
+      const launched = openSafeSetupWindow(selection, pluginReport);
+      printSafeSetupLaunchResult(launched, pluginReport, selection);
+      return;
+    }
+
+    if (launchPlan.type === 'bootstrap') {
+      projectConfig = markBootstrapLaunch(selection, projectConfig, launchPlan.mode);
+      const launched = openBootstrapWindow(selection, projectConfig, launchPlan.mode, launchPlan.reason);
+      printBootstrapLaunchResult(selection, projectConfig, launched, launchPlan.reason);
+      return;
+    }
+
+    const initialWntdReason = launchPlan.type === 'wntd' ? launchPlan.reason : null;
+    ensureRuntimeFiles(selection);
+    const wntdResult = await runProjectWithWntd(selection, projectConfig, initialWntdReason);
+    if (wntdResult && wntdResult.archived) {
+      projectConfig = ensureProjectState(selection);
+      continue;
+    }
+    break;
   }
-
-  registry.lastProjectId = selection.id;
-  selection.lastSelectedAt = new Date().toISOString();
-  upsertProject(registry, selection);
-  saveRegistry(registry);
-
-  const status = projectStatus(selection, projectConfig);
-  printProjectSummary(selection, projectConfig, status);
-
-  const pluginReport = checkPluginPreflight(projectConfig);
-  printPluginPreflight(pluginReport);
-
-  const launchPlan = resolveProjectLaunchPlan(selection, projectConfig, pluginReport);
-  if (launchPlan.type === 'safe-setup') {
-    const launched = openSafeSetupWindow(selection, pluginReport);
-    printSafeSetupLaunchResult(launched, pluginReport, selection);
-    return;
-  }
-
-  if (launchPlan.type === 'bootstrap') {
-    projectConfig = markBootstrapLaunch(selection, projectConfig, launchPlan.mode);
-    const launched = openBootstrapWindow(selection, projectConfig, launchPlan.mode, launchPlan.reason);
-    printBootstrapLaunchResult(selection, projectConfig, launched, launchPlan.reason);
-    return;
-  }
-
-  const initialWntdReason = launchPlan.type === 'wntd' ? launchPlan.reason : null;
-  ensureRuntimeFiles(selection);
-  await runProjectWithWntd(selection, projectConfig, initialWntdReason);
 }
 
 async function selectProject(registry) {
@@ -1176,6 +1184,22 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
 
     await runLoop(project, projectConfig);
     projectConfig = ensureProjectState(project);
+
+    if (!fs.existsSync(project.projectDoc)) {
+      projectConfig = setBootstrapState(project, {
+        status: 'not_started',
+        phase: 0,
+        project_doc_confirmed: false,
+        config_decision: 'pending',
+        confirmed_at: null,
+        confirmed_by: null,
+        project_doc_source: 'none',
+      }, projectConfig);
+      console.log(colorize('key', '\n=== All tasks completed ==='));
+      console.log(colorize('note', 'project.md archived to History/. Starting new bootstrap...\n'));
+      return { archived: true };
+    }
+
     pendingWntdReason = blockedInteractionReason(project);
     if (!pendingWntdReason) {
       return;
