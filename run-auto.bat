@@ -46,7 +46,7 @@ echo %BOX_VT% %C_NOTE%Checking Claude Code...%C_RESET%
 where claude >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     set "ctext=%CROSS%  Claude Code CLI not found.%P60%"
-    echo %BOX_VT% %C_ERR%!ctext:~0,57!%C_RESET% %BOX_VT%
+    echo %BOX_VT% !ctext:~0,56! %BOX_VT%
     echo %BOX_BL%%BH:~0,58%%BOX_BR%
     echo.
     echo %C_NOTE%  Install: npm install -g @anthropic-ai/claude-code%C_RESET%
@@ -56,14 +56,14 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 set "ctext=%CHECK%  Claude Code%P60%"
-echo %BOX_VT% %C_RUN%!ctext:~0,57!%C_RESET% %BOX_VT%
+echo %BOX_VT% !ctext:~0,56! %BOX_VT%
 
 :: Node.js
 echo %BOX_VT% %C_NOTE%Checking Node.js...%C_RESET%
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     set "ctext=%CROSS%  Node.js not found.%P60%"
-    echo %BOX_VT% %C_ERR%!ctext:~0,57!%C_RESET% %BOX_VT%
+    echo %BOX_VT% !ctext:~0,56! %BOX_VT%
     echo %BOX_BL%%BH:~0,58%%BOX_BR%
     echo.
     echo %C_NOTE%  Install Node.js and verify: node --version%C_RESET%
@@ -71,7 +71,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 set "ctext=%CHECK%  Node.js%P60%"
-echo %BOX_VT% %C_RUN%!ctext:~0,57!%C_RESET% %BOX_VT%
+echo %BOX_VT% !ctext:~0,56! %BOX_VT%
 
 :: Git Bash
 echo %BOX_VT% %C_NOTE%Checking Git Bash...%C_RESET%
@@ -90,7 +90,7 @@ if "%BASH%"=="" (
 )
 if "%BASH%"=="" (
     set "ctext=%CROSS%  Git Bash not found.%P60%"
-    echo %BOX_VT% %C_ERR%!ctext:~0,57!%C_RESET% %BOX_VT%
+    echo %BOX_VT% !ctext:~0,56! %BOX_VT%
     echo %BOX_BL%%BH:~0,58%%BOX_BR%
     echo.
     echo %C_NOTE%  Checked: C:\Program Files\Git\bin\bash.exe%C_RESET%
@@ -101,7 +101,7 @@ if "%BASH%"=="" (
     exit /b 1
 )
 set "ctext=%CHECK%  Git Bash: !BASH!%P60%"
-echo %BOX_VT% %C_RUN%!ctext:~0,57!%C_RESET% %BOX_VT%
+echo %BOX_VT% !ctext:~0,56! %BOX_VT%
 
 :: Box footer
 echo %BOX_BL%%BH:~0,58%%BOX_BR%
@@ -121,21 +121,21 @@ if exist "%MINGW_BIN%\gcc.exe" (
 echo.
 echo %C_KEY%%BOX_TL%-- AutoFish %BH:~0,46%%BOX_TR%%C_RESET%
 set "ctext=Root:    %AUTOFISH_ROOT%%P60%"
-echo %BOX_VT% %C_NOTE%!ctext:~0,57!%C_RESET% %BOX_VT%
+echo %BOX_VT% !ctext:~0,56! %BOX_VT%
 set "ctext=Started: %date% %time%%P60%"
-echo %BOX_VT% %C_NOTE%!ctext:~0,57!%C_RESET% %BOX_VT%
+echo %BOX_VT% !ctext:~0,56! %BOX_VT%
 echo %BOX_BL%%BH:~0,58%%BOX_BR%
 
 echo.
-echo %C_KEY%%BOX_TL%-- Required Files %BH:~0,44%%BOX_TR%%C_RESET%
+echo %C_KEY%%BOX_TL%-- Required Files %BH:~0,40%%BOX_TR%%C_RESET%
 set "MISSING="
 for %%f in ("run-loop.sh" "auto-prompt.md" "config.json" "PROJECT_SPEC.md" "bootstrap-seed.md" "autofish.js") do (
     if exist "%AUTOFISH_ROOT%%%~f" (
         set "ctext=%CHECK%  %%~f%P60%"
-        echo %BOX_VT% %C_RUN%!ctext:~0,57!%C_RESET% %BOX_VT%
+        echo %BOX_VT% !ctext:~0,56! %BOX_VT%
     ) else (
         set "ctext=%CROSS%  %%~f%P60%"
-        echo %BOX_VT% %C_ERR%!ctext:~0,57!%C_RESET% %BOX_VT%
+        echo %BOX_VT% !ctext:~0,56! %BOX_VT%
         set "MISSING=!MISSING! %%~f"
     )
 )
@@ -148,14 +148,14 @@ if defined MISSING (
 )
 
 echo.
-echo %C_KEY%%BOX_TL%-- Optional Files %BH:~0,44%%BOX_TR%%C_RESET%
+echo %C_KEY%%BOX_TL%-- Optional Files %BH:~0,40%%BOX_TR%%C_RESET%
 for %%f in ("progress-filter.js" "harness-check.js") do (
     if exist "%AUTOFISH_ROOT%%%~f" (
         set "ctext=%CHECK%  %%~f%P60%"
-        echo %BOX_VT% %C_RUN%!ctext:~0,57!%C_RESET% %BOX_VT%
+        echo %BOX_VT% !ctext:~0,56! %BOX_VT%
     ) else (
         set "ctext=%WARN_SYM%  %%~f%P60%"
-        echo %BOX_VT% %C_WARN%!ctext:~0,57!%C_RESET% %BOX_VT%
+        echo %BOX_VT% !ctext:~0,56! %BOX_VT%
     )
 )
 echo %BOX_BL%%BH:~0,58%%BOX_BR%
@@ -166,9 +166,9 @@ node "%AUTOFISH_ROOT%autofish.js"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
-echo %C_KEY%%BOX_TL%-- Session Ended %BH:~0,44%%BOX_TR%%C_RESET%
+echo %C_KEY%%BOX_TL%-- Session Ended %BH:~0,41%%BOX_TR%%C_RESET%
 set "ctext=Exit code: %EXIT_CODE%%P60%"
-echo %BOX_VT% %C_NOTE%!ctext:~0,57!%C_RESET% %BOX_VT%
+echo %BOX_VT% !ctext:~0,56! %BOX_VT%
 echo %BOX_BL%%BH:~0,58%%BOX_BR%
 echo.
 pause

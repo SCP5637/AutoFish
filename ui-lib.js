@@ -84,11 +84,13 @@ function createBox(env = {}, stream = process.stdout) {
     if (!title) {
       return C.tl + C.hz.repeat(width - 2) + C.tr;
     }
-    const inner = ' ' + title + ' ';
-    if (inner.length + 2 > width) {
-      return C.tl + C.hz.repeat(width - 2) + C.tr;
+    let t = String(title);
+    const maxTitle = width - 5;
+    if (t.length > maxTitle) {
+      t = t.slice(0, maxTitle - 1) + '…';
     }
-    return C.tl + C.hz + inner + C.hz.repeat(width - 3 - inner.length) + C.tr;
+    const inner = ' ' + t + ' ';
+    return C.tl + C.hz + inner + C.hz.repeat(Math.max(0, width - 3 - inner.length)) + C.tr;
   }
 
   function footer(width = 80) {
@@ -98,9 +100,8 @@ function createBox(env = {}, stream = process.stdout) {
   function section(title, lines, width = 80) {
     const result = [header(title, width)];
     for (const line of lines) {
-      const vis = visualWidth(line);
-      const pad = Math.max(0, width - 3 - vis);
-      result.push(C.vt + ' ' + line + ' '.repeat(pad) + C.vt);
+      const l = padOrTruncate(String(line), Math.max(1, width - 3));
+      result.push(C.vt + ' ' + l + C.vt);
     }
     result.push(footer(width));
     return result.join('\n');
@@ -108,16 +109,20 @@ function createBox(env = {}, stream = process.stdout) {
 
   function kv(key, value, width = 80, keyWidth = 14) {
     const label = (key + ':').padEnd(keyWidth);
-    const vis = visualWidth(label) + 1 + visualWidth(value);
+    const maxVal = width - 3 - visualWidth(label) - 1;
+    const val = padOrTruncate(String(value), Math.max(1, maxVal));
+    const vis = visualWidth(label) + 1 + visualWidth(val);
     const pad = Math.max(0, width - 3 - vis);
-    return C.vt + ' ' + label + ' ' + value + ' '.repeat(pad) + C.vt;
+    return C.vt + ' ' + label + ' ' + val + ' '.repeat(pad) + C.vt;
   }
 
   function bullet(text, indent = 1, width = 80) {
     const prefix = ' '.repeat(indent * 2) + C.bul + ' ';
-    const vis = visualWidth(prefix) + visualWidth(text);
+    const maxText = width - 3 - visualWidth(prefix);
+    const txt = padOrTruncate(String(text), Math.max(1, maxText));
+    const vis = visualWidth(prefix) + visualWidth(txt);
     const pad = Math.max(0, width - 3 - vis);
-    return C.vt + ' ' + prefix + text + ' '.repeat(pad) + C.vt;
+    return C.vt + ' ' + prefix + txt + ' '.repeat(pad) + C.vt;
   }
 
   function sep(width = 80) {
@@ -137,9 +142,10 @@ function createBox(env = {}, stream = process.stdout) {
   }
 
   function box_line(text, width = 80) {
-    const vis = visualWidth(text);
-    const pad = Math.max(0, width - 3 - vis);
-    return C.vt + ' ' + text + ' '.repeat(pad) + C.vt;
+    const maxText = width - 3;
+    const txt = padOrTruncate(String(text), Math.max(1, maxText));
+    const pad = Math.max(0, width - 3 - visualWidth(txt));
+    return C.vt + ' ' + txt + ' '.repeat(pad) + C.vt;
   }
 
   const box_header = header;

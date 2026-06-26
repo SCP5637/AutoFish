@@ -113,8 +113,12 @@ box_header() {
         inner=$(printf '%*s' "$((width - 2))" '' | tr ' ' "$BOX_HZ")
         printf '%s' "$BOX_TL$inner$BOX_TR"
     else
+        local max_title=$((width - 5))
+        if [ ${#title} -gt $max_title ]; then
+            title="${title:0:$((max_title - 1))}…"
+        fi
         local inner=" $title "
-        local right_len=$((width - 2 - ${#inner}))
+        local right_len=$((width - 3 - ${#inner}))
         [ "$right_len" -lt 0 ] && right_len=0
         local right
         right=$(printf '%*s' "$right_len" '' | tr ' ' "$BOX_HZ")
@@ -136,8 +140,12 @@ box_line() {
     local text="${1:-}"
     local width="${2:-60}"
     detect_box_chars
+    local max_len=$((width - 3))
+    if [ ${#text} -gt $max_len ]; then
+        text="${text:0:$((max_len - 1))}…"
+    fi
     local content=" $text"
-    local pad_len=$((width - 3 - ${#text}))
+    local pad_len=$((width - 2 - ${#content}))
     [ "$pad_len" -lt 0 ] && pad_len=0
     local padding
     padding=$(printf '%*s' "$pad_len" '')
@@ -158,6 +166,10 @@ box_kv() {
     local key="$1" val="$2" col="${3:-}" w="${4:-60}"
     detect_box_chars
     local lhs="  $key"
+    local max_val=$((w - 2 - ${#lhs}))
+    if [ ${#val} -gt $max_val ]; then
+        val="${val:0:$((max_val - 1))}…"
+    fi
     printf '%b' "$BOX_VT"
     colorize "$c_note" "$lhs"
     [ -n "$col" ] && colorize "$col" "$val" || printf '%s' "$val"
@@ -524,7 +536,7 @@ validate_project_doc() {
             log_key "All tasks complete. Archived project.md -> History/$archived_name"
             [ -f "$DONE_FILE" ] && cp "$DONE_FILE" "$history_dir/task-done-${ts}.txt" 2>/dev/null || true
             [ -f "$BLOCKED_FILE" ] && cp "$BLOCKED_FILE" "$history_dir/task-blocked-${ts}.txt" 2>/dev/null || true
-            log_key "Project finished. Restart AutoFish to begin a new bootstrap."
+            log_key "Project finished. AutoFish will start a new bootstrap automatically."
             exit 0
         fi
         log_error "[FATAL] No tasks found in project.md (format: '$task_format')"

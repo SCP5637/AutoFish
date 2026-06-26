@@ -79,7 +79,7 @@ async function main() {
   }
 
   if (!fs.existsSync(selection.projectDir)) {
-    console.log(`\n${box.header('Project missing', W)}`);
+    console.log(`\n${colorize('error', '=== Project missing ===')}`);
     console.log(colorize('dim', `Path: ${selection.projectDir}`));
     console.log(colorize('dim', 'Re-register project with New Project.'));
     return;
@@ -209,8 +209,8 @@ function printMenu(registry) {
   }
 
   function boxLine(inner) {
-    const plain = stripAnsi(inner);
-    const pad = Math.max(0, W - 4 - plain.length);
+    const visible = stripAnsi(inner).length;
+    const pad = Math.max(0, W - 4 - visible);
     return C.vt + ' ' + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
@@ -222,7 +222,7 @@ function printMenu(registry) {
     const right = statusIcon(project);
     const leftVis = left.length;
     const rightVis = stripAnsi(right).length;
-    const gap = Math.max(1, W - 4 - leftVis - rightVis);
+    const gap = Math.max(1, W - 6 - leftVis - rightVis);
     return left + ' '.repeat(gap) + right;
   }
 
@@ -271,10 +271,10 @@ async function createNewProjectInteractive(registry) {
   const ICON_WARN = unicode ? '⚠' : '[!!]';
 
   function boxLine(inner, indent = 0) {
-    const prefix = ' '.repeat(indent * 2);
-    const plain = stripAnsi(prefix + inner);
-    const pad = Math.max(0, W - 4 - plain.length);
-    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+    const prefix = indent > 0 ? '  '.repeat(indent) : '';
+    const visible = stripAnsi(prefix + inner).length;
+    const pad = Math.max(0, W - 4 - visible);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
   while (true) {
@@ -325,10 +325,10 @@ async function resolveProjectPathInteractive(inputPath) {
   const ICON_WARN = unicode ? '⚠' : '[!!]';
 
   function boxLine(inner, indent = 0) {
-    const prefix = ' '.repeat(indent * 2);
-    const plain = stripAnsi(prefix + inner);
-    const pad = Math.max(0, W - 4 - plain.length);
-    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+    const prefix = indent > 0 ? '  '.repeat(indent) : '';
+    const visible = stripAnsi(prefix + inner).length;
+    const pad = Math.max(0, W - 4 - visible);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
   const normalizedInput = normalizeInputPath(inputPath);
@@ -973,10 +973,10 @@ function printPluginPreflight(report) {
   const ICON_FAIL = unicode ? '✗' : '[XX]';
 
   function boxLine(inner, indent = 0) {
-    const prefix = ' '.repeat(indent * 2);
-    const plain = stripAnsi(prefix + inner);
-    const pad = Math.max(0, W - 4 - plain.length);
-    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+    const prefix = indent > 0 ? '  '.repeat(indent) : '';
+    const visible = stripAnsi(prefix + inner).length;
+    const pad = Math.max(0, W - 4 - visible);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
   console.log('');
@@ -1059,10 +1059,10 @@ function printSafeSetupLaunchResult(launched, report, project) {
   const ICON_WARN = unicode ? '⚠' : '[!!]';
 
   function boxLine(inner, indent = 0) {
-    const prefix = ' '.repeat(indent * 2);
-    const plain = stripAnsi(prefix + inner);
-    const pad = Math.max(0, W - 4 - plain.length);
-    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+    const prefix = indent > 0 ? '  '.repeat(indent) : '';
+    const visible = stripAnsi(prefix + inner).length;
+    const pad = Math.max(0, W - 4 - visible);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
   console.log('');
@@ -1187,10 +1187,10 @@ function printWntdLaunchResult(project, options) {
   const ICON_WARN = unicode ? '⚠' : '[!!]';
 
   function boxLine(inner, indent = 0) {
-    const prefix = ' '.repeat(indent * 2);
-    const plain = stripAnsi(prefix + inner);
-    const pad = Math.max(0, W - 4 - plain.length);
-    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+    const prefix = indent > 0 ? '  '.repeat(indent) : '';
+    const visible = stripAnsi(prefix + inner).length;
+    const pad = Math.max(0, W - 4 - visible);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
   console.log('');
@@ -1514,10 +1514,10 @@ function printBootstrapLaunchResult(project, projectConfig, launched, reason) {
   const ICON_WARN = unicode ? '⚠' : '[!!]';
 
   function boxLine(inner, indent = 0) {
-    const prefix = ' '.repeat(indent * 2);
-    const plain = stripAnsi(prefix + inner);
-    const pad = Math.max(0, W - 4 - plain.length);
-    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+    const prefix = indent > 0 ? '  '.repeat(indent) : '';
+    const visible = stripAnsi(prefix + inner).length;
+    const pad = Math.max(0, W - 4 - visible);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + ' ' + C.vt;
   }
 
   console.log('');
