@@ -710,9 +710,9 @@ function readWntdChecklistState(project) {
       break;
     }
 
-    if (/^- \[x\]/.test(line)) {
+    if (/- \[x\]/.test(line)) {
       resolved += 1;
-    } else if (/^- \[ \]/.test(line)) {
+    } else if (/- \[ \]/.test(line)) {
       unresolved += 1;
     }
   }
