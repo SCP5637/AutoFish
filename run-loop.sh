@@ -969,7 +969,7 @@ $(build_progress_snapshot)
         cat "$tmp_log"
 
         if [ "$segment_exit" -ne 0 ]; then
-            if grep -qE "Reached max turns|max turns" "$tmp_err" 2>/dev/null; then
+            if grep -qE "Reached max turns|max turns" "$tmp_err" "$tmp_log" 2>/dev/null; then
                 log_note "Segment ${round}.${segment_index}: hit turn limit (normal)"
             else
                 local err_size
