@@ -729,11 +729,12 @@ run_harness_check() {
     fi
 
     local result
-    result=$(node "$AUTOFISH_ROOT/harness-check.js" "$segment_log" "$harness_model" "$max_retries" 2>/dev/null)
+    result=$(node "$AUTOFISH_ROOT/harness-check.js" "$segment_log" "$harness_model" "$max_retries" 2>&1)
     local exit_code=$?
 
     if [ $exit_code -ne 0 ]; then
         log_error "Harness check r${round}s${segment_index}: node harness-check.js exit=$exit_code"
+        [ -n "$result" ] && log_error "  stderr: $(echo "$result" | tail -3 | tr '\n' ' ')"
         return 1
     fi
 

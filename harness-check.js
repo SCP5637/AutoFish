@@ -2,6 +2,8 @@
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const segmentLog = process.argv[2];
 const harnessModel = process.argv[3] || 'haiku';
@@ -13,7 +15,7 @@ if (!segmentLog || !fs.existsSync(segmentLog)) {
 }
 
 const raw = fs.readFileSync(segmentLog, 'utf8');
-const outputTail = raw.slice(-8000);
+const outputTail = raw.slice(-6000);
 
 const checkPrompt = `你是 AutoFish 运行时监督器。审查 agent 最近的对话输出，判断是否偏离任务方向。
 
@@ -33,32 +35,60 @@ ${outputTail}
 
 若偏离方向，harness 填 false，comment 里用中文说明偏离了什么、应该如何纠正。`;
 
+// Write prompt to temp file to avoid cmd.exe 8191-char limit
+const promptFile = path.join(os.tmpdir(), `af-harness-${Date.now()}.txt`);
+fs.writeFileSync(promptFile, checkPrompt, 'utf8');
+
 for (let attempt = 1; attempt <= maxRetries; attempt++) {
-  const result = spawnSync('claude', [
-    '-p', checkPrompt,
-    '--model', harnessModel,
-    '--permission-mode', 'auto',
-    '--max-turns', '5',
-    '--max-budget-usd', '0.10',
-  ], { encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 60000 });
+  // Use shell redirect to pipe prompt file into claude via stdin
+  const cmd = `claude --model ${harnessModel} --permission-mode auto --max-turns 10 --max-budget-usd 0.20 < "${promptFile}"`;
+
+  const result = spawnSync(cmd, [], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    timeout: 120000,
+    shell: true,
+    windowsHide: true,
+  });
 
   const output = (result.stdout || '').trim();
+  const errOut = (result.stderr || '').trim();
+
+  // Log diagnostics on first attempt
+  if (attempt === 1) {
+    if (result.error) {
+      process.stderr.write(`Harness spawn error: ${result.error.message}\n`);
+    }
+    if (result.status !== 0) {
+      process.stderr.write(`Harness claude exit=${result.status}\n`);
+    }
+    if (errOut && !errOut.includes('Warning')) {
+      process.stderr.write(`Harness claude stderr: ${errOut.slice(0, 300)}\n`);
+    }
+  }
 
   try {
     const jsonMatch = output.match(/\{[\s\S]*"harness"[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       if (typeof parsed.harness === 'boolean') {
+        try { fs.unlinkSync(promptFile); } catch {}
         console.log(JSON.stringify(parsed));
         process.exit(0);
       }
     }
   } catch {}
 
+  if (attempt === 1 && output.length < 10) {
+    process.stderr.write(`Harness empty/short output. CMD: model=${harnessModel} promptFile=${promptFile}\n`);
+  }
+
   if (attempt < maxRetries) {
-    process.stderr.write(`Harness check attempt ${attempt}: invalid format, retrying...\n`);
+    process.stderr.write(`Harness check attempt ${attempt}: invalid format (len=${output.length}), retrying...\n`);
   }
 }
+
+try { fs.unlinkSync(promptFile); } catch {}
 
 process.stderr.write(`Harness check failed after ${maxRetries} attempts\n`);
 process.exit(1);
