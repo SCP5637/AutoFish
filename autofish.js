@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const readline = require('readline');
 const { spawnSync, spawn } = require('child_process');
 
+const { createBox, createPalette, supportsUnicode, stripAnsi, UNICODE_CHARS, ASCII_CHARS } = require('./ui-lib');
+
 const ROOT = normalizePath(process.env.AUTOFISH_ROOT || __dirname);
 const ROOT_CONFIG_FILE = path.join(ROOT, 'config.json');
 const STATE_DIR = path.join(ROOT, 'state');
@@ -186,43 +188,78 @@ async function selectProject(registry) {
 }
 
 function printMenu(registry) {
-  console.log('');
-  console.log(colorize('key', '================ AutoFish ================'));
-  console.log('');
-  console.log(colorize('key', 'Root:'));
-  console.log(colorize('note', `  ${toPosixPath(ROOT)}`));
-  console.log('');
-  console.log(colorize('key', 'Last:'));
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+  const W = 80;
 
-  if (registry.lastProjectId) {
-    const last = registry.projects.find((project) => project.id === registry.lastProjectId);
-    if (last) {
-      console.log(`  0. ${padRight(last.name, 28)} ${colorize('run', `[${projectStatus(last)}]`)}`);
-      console.log(colorize('note', `     ${last.projectDir}`));
-    } else {
-      console.log(colorize('note', '  0. none'));
-    }
-  } else {
-    console.log(colorize('note', '  0. none'));
+  const ICON = {
+    ok: unicode ? '✓' : '[OK]',
+    fail: unicode ? '✗' : '[XX]',
+    warn: unicode ? '⚠' : '[!!]',
+  };
+  const ARROW = unicode ? '▸' : '>';
+
+  function statusIcon(project) {
+    const s = projectStatus(project);
+    if (s === 'ready' || s === 'complete') return palette.info(ICON.ok) + ' ' + s;
+    if (s === 'missing') return palette.error(ICON.fail) + ' ' + s;
+    return palette.warn(ICON.warn) + ' ' + s;
+  }
+
+  function boxLine(inner) {
+    const plain = stripAnsi(inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + inner + ' '.repeat(pad) + ' ' + C.vt;
+  }
+
+  function projectRow(num, project) {
+    const numStr = num === 0 ? '0.' : String(num).padEnd(2);
+    const name = project ? project.name : 'none';
+    const left = numStr + ' ' + name;
+    if (!project) return palette.dim(left);
+    const right = statusIcon(project);
+    const leftVis = left.length;
+    const rightVis = stripAnsi(right).length;
+    const gap = Math.max(1, W - 4 - leftVis - rightVis);
+    return left + ' '.repeat(gap) + right;
   }
 
   console.log('');
-  console.log(colorize('key', 'Projects:'));
+  console.log(box.header('AutoFish', W));
+  console.log(box.kv('Root', toPosixPath(ROOT), W));
+
+  console.log(box.sep(W));
+  console.log(boxLine(palette.accent('Last:')));
+  if (registry.lastProjectId) {
+    const last = registry.projects.find((p) => p.id === registry.lastProjectId);
+    if (last) {
+      console.log(boxLine('  ' + projectRow(0, last)));
+      console.log(boxLine(palette.dim('     ' + last.projectDir)));
+    } else {
+      console.log(boxLine(palette.dim('  0. none')));
+    }
+  } else {
+    console.log(boxLine(palette.dim('  0. none')));
+  }
+
+  console.log(box.sep(W));
+  console.log(boxLine(palette.accent('Projects:')));
   if (registry.projects.length === 0) {
-    console.log(colorize('note', '  (none)'));
+    console.log(boxLine(palette.dim('  (none)')));
   } else {
     registry.projects.forEach((project, index) => {
-      console.log(`  ${String(index + 1).padEnd(2)} ${padRight(project.name, 28)} ${colorize('run', `[${projectStatus(project)}]`)}`);
-      console.log(colorize('note', `     ${project.projectDir}`));
+      console.log(boxLine('  ' + projectRow(index + 1, project)));
+      console.log(boxLine(palette.dim('     ' + project.projectDir)));
     });
   }
 
-  console.log('');
-  console.log(colorize('key', 'Actions:'));
-  console.log(colorize('run', `  ${registry.projects.length + 1}. New Project`));
-  console.log(colorize('run', '  X. Exit'));
-  console.log('');
-  console.log(colorize('key', '=========================================='));
+  console.log(box.sep(W));
+  console.log(boxLine(palette.accent(ARROW) + ' ' + palette.info(`${registry.projects.length + 1}. New Project`)));
+  console.log(boxLine(palette.accent(ARROW) + ' ' + palette.info('X. Exit')));
+
+  console.log(box.footer(W));
 }
 
 async function createNewProjectInteractive(registry) {
@@ -887,22 +924,47 @@ function printPluginPreflight(report) {
     return;
   }
 
-  console.log(colorize('key', '=== Plugin preflight ==='));
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+  const W = 80;
+  const ICON_OK = unicode ? '✓' : '[OK]';
+  const ICON_FAIL = unicode ? '✗' : '[XX]';
+
+  function boxLine(inner, indent = 0) {
+    const prefix = ' '.repeat(indent * 2);
+    const plain = stripAnsi(prefix + inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+  }
+
+  console.log('');
+  console.log(box.header('Plugin preflight', W));
+
   for (const detail of report.details) {
-    const color = detail.ok ? 'run' : 'warn';
-    console.log(colorize(color, `${detail.plugin}: ${detail.status}`));
+    const icon = detail.ok ? palette.info(ICON_OK) : palette.error(ICON_FAIL);
+    console.log(boxLine(icon + ' ' + detail.plugin + ': ' + detail.status));
     for (const note of detail.notes) {
-      console.log(colorize('note', `  - ${note}`));
+      console.log(boxLine(palette.dim(note), 1));
     }
   }
-  for (const warning of report.warnings) {
-    console.log(colorize('warn', `  ! ${warning}`));
+
+  if (report.warnings.length > 0) {
+    console.log(box.sep(W));
+    for (const warning of report.warnings) {
+      console.log(boxLine(palette.warn(warning), 1));
+    }
   }
+
   if (report.missingRequired.length > 0 || report.missingOptional.length > 0) {
-    console.log(colorize('note', '  install: npx cc-safe-setup'));
-    console.log(colorize('note', '  verify:  npx cc-safe-setup --doctor'));
-    console.log(colorize('note', '  after:   restart Claude Code / AutoFish'));
+    console.log(box.sep(W));
+    console.log(boxLine(palette.info('install: npx cc-safe-setup'), 1));
+    console.log(boxLine(palette.info('verify:  npx cc-safe-setup --doctor'), 1));
+    console.log(boxLine(palette.info('after:   restart Claude Code / AutoFish'), 1));
   }
+
+  console.log(box.footer(W));
   console.log('');
 }
 
@@ -947,21 +1009,31 @@ function openSafeSetupWindow(project, pluginReport) {
 }
 
 function printSafeSetupLaunchResult(launched, report, project) {
-  console.log(colorize('warn', '=== Safety hooks attention required ==='));
-  console.log(colorize('note', `Project: ${project.projectDir}`));
-  console.log(colorize('note', `Required missing: ${report.missingRequired.join(', ') || '(none)'}`));
-  console.log(colorize('note', `Optional missing: ${report.missingOptional.join(', ') || '(none)'}`));
-  console.log('');
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const W = 80;
 
+  const lines = [
+    palette.warn(`Project: ${project.projectDir}`),
+  ];
+  if (report.missingRequired.length > 0) {
+    lines.push(palette.warn(`Required: ${report.missingRequired.join(', ')}`));
+  }
+  if (report.missingOptional.length > 0) {
+    lines.push(palette.warn(`Optional: ${report.missingOptional.join(', ')}`));
+  }
+  lines.push('');
   if (launched) {
-    console.log(colorize('run', 'Opened Claude safety-hooks setup window.'));
-    console.log(colorize('note', 'Complete install + doctor there, then restart Claude Code / AutoFish.'));
+    lines.push(palette.info('Setup window opened.'));
+    lines.push(palette.dim('Complete install + doctor, then restart.'));
   } else {
-    console.log(colorize('error', '[ERROR] Failed to open hooks setup window.'));
-    console.log(colorize('note', 'Run manually: npx cc-safe-setup'));
-    console.log(colorize('note', 'Verify manually: npx cc-safe-setup --doctor'));
+    lines.push(palette.error('Failed to open setup window.'));
+    lines.push(palette.dim('npx cc-safe-setup'));
+    lines.push(palette.dim('npx cc-safe-setup --doctor'));
   }
 
+  console.log('');
+  console.log(box.section('Safety hooks required', lines, W));
   console.log('');
 }
 
@@ -1335,16 +1407,23 @@ function bootstrapReason(projectConfig) {
 }
 
 function printProjectSummary(project, projectConfig, status) {
-  const bootstrap = projectConfig.bootstrap;
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const W = 80;
+
+  const statusColor = (status === 'ready' || status === 'complete') ? palette.info :
+                      status === 'missing' ? palette.error : palette.warn;
+
   console.log('');
-  console.log(colorize('key', '=== Selected project ==='));
-  console.log(colorize('note', `Name:        ${project.name}`));
-  console.log(colorize('run', `Status:      ${status}`));
-  console.log(colorize('note', `Project:     ${project.projectDir}`));
-  console.log(colorize('note', `State dir:   ${project.stateDir}`));
-  console.log(colorize('note', `Project doc: ${project.projectDoc}`));
-  console.log(colorize('note', `Config:      ${project.configFile}`));
-  console.log(colorize('key', `Bootstrap:   status=${bootstrap.status}, phase=${bootstrap.phase}, confirmed=${bootstrap.project_doc_confirmed}, config=${bootstrap.config_decision}`));
+  console.log(box.header('Selected project', W));
+  console.log(box.kv('Name', project.name, W));
+  console.log(box.kv('Status', statusColor(status), W));
+  console.log(box.kv('Project', palette.dim(project.projectDir), W));
+  console.log(box.kv('State dir', palette.dim(project.stateDir), W));
+  console.log(box.kv('Project doc', palette.dim(project.projectDoc), W));
+  console.log(box.kv('Config', palette.dim(project.configFile), W));
+  console.log(box.kv('Bootstrap', palette.dim(`status=${projectConfig.bootstrap.status}, phase=${projectConfig.bootstrap.phase}, confirmed=${projectConfig.bootstrap.project_doc_confirmed}, config=${projectConfig.bootstrap.config_decision}`), W));
+  console.log(box.footer(W));
   console.log('');
 }
 
