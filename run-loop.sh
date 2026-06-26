@@ -501,22 +501,58 @@ make_round_checkpoint() {
         return 0
     fi
 
-    local msg=""
-    if [ -f "$DONE_FILE" ]; then
-        local latest
-        latest=$(tail -3 "$DONE_FILE" 2>/dev/null | grep -oP '\]\s+\K.+?(?=\s*—|\s*$)' 2>/dev/null || \
-                 tail -3 "$DONE_FILE" 2>/dev/null | sed 's/.*\] //; s/ —.*//; s/PROGRESS: //; s/SESSION_RESET//')
-        if [ -n "$latest" ]; then
-            msg=$(echo "$latest" | tr '\n' ';' | sed 's/;$//; s/;/, /g')
-        fi
-    fi
-
-    [ -z "$msg" ] && msg="round $round checkpoint"
-    msg="autofish(r$round): $msg"
+    local msg
+    msg=$(build_commit_message "$round")
+    log_note "Checkpoint msg: $msg"
 
     if git_has_changes && commit_checkpoint "$msg"; then
         log_key "Git checkpoint(r$round): $msg"
     fi
+}
+
+build_commit_message() {
+    local round="$1"
+
+    local summary=""
+    if [ -f "$DONE_FILE" ]; then
+        local latest
+        latest=$(grep -v "ALL_COMPLETE\|SESSION_RESET\|PROGRESS:" "$DONE_FILE" 2>/dev/null | tail -1)
+        if [ -n "$latest" ]; then
+            summary=$(echo "$latest" | sed 's/\[.*\] //; s/ — 完成.*//; s/— 完成//; s/ 完成//' | tr -d '\n\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            summary=$(echo "$summary" | sed 's/\(.\{1,25\}\).*/\1/' | sed 's/[，,。\.、；;：:！!？?]\{0,1\}$//')
+        fi
+    fi
+
+    if [ -z "$summary" ]; then
+        echo "chore: [autoFish] round $round checkpoint"
+        return 0
+    fi
+
+    local type="chore"
+    local lower
+    lower=$(echo "$summary" | tr '[:upper:]' '[:lower:]')
+
+    if echo "$lower" | grep -qE "新增|添加|实现|创建|加入|增加|支持|开发"; then
+        type="feat"
+    elif echo "$lower" | grep -qE "修复|修正|解决|fix|bug"; then
+        type="fix"
+    elif echo "$lower" | grep -qE "重构|整理|重组|拆分|迁移|调整"; then
+        type="refactor"
+    elif echo "$lower" | grep -qE "优化|加速|减少|压缩|改善|提升|性能"; then
+        type="perf"
+    elif echo "$lower" | grep -qE "文档|readme|doc"; then
+        type="docs"
+    elif echo "$lower" | grep -qE "测试|test"; then
+        type="test"
+    elif echo "$lower" | grep -qE "构建|编译|打包|升级|依赖|build|cmake"; then
+        type="build"
+    elif echo "$lower" | grep -qE "样式|style|格式|空格|排版"; then
+        type="style"
+    elif echo "$lower" | grep -qE "配置|config|setup|install|ci|部署"; then
+        type="chore"
+    fi
+
+    echo "${type}: [autoFish] ${summary}"
 }
 
 check_stop_conditions() {
@@ -645,21 +681,76 @@ should_rebuild_session() {
     return 1
 }
 
-run_cc_round() {
+build_progress_snapshot() {
+    local snapshot=""
+
+    if [ -f "$DONE_FILE" ]; then
+        local last_done
+        last_done=$(grep -v "ALL_COMPLETE\|SESSION_RESET\|PROGRESS:" "$DONE_FILE" 2>/dev/null | tail -1)
+        [ -n "$last_done" ] && snapshot="${snapshot}最近完成: ${last_done}
+"
+    fi
+
+    if [ -f "$PROJECT_DOC_FILE" ]; then
+        local next_task
+        next_task=$(grep -m1 "^\- \[ \]" "$PROJECT_DOC_FILE" 2>/dev/null | head -1)
+        [ -n "$next_task" ] && snapshot="${snapshot}下一个任务: ${next_task}
+"
+        if [ -z "$next_task" ]; then
+            local remaining
+            remaining=$(grep -c "^\- \[ \]" "$PROJECT_DOC_FILE" 2>/dev/null || echo 0)
+            snapshot="${snapshot}状态: $remaining 个未完成任务。
+"
+        fi
+    fi
+
+    if [ -f "$BLOCKED_FILE" ] && [ -s "$BLOCKED_FILE" ]; then
+        local last_blocked
+        last_blocked=$(tail -1 "$BLOCKED_FILE" 2>/dev/null)
+        [ -n "$last_blocked" ] && snapshot="${snapshot}最近阻塞: ${last_blocked}
+"
+    fi
+
+    [ -z "$snapshot" ] && snapshot="继续执行 project.md 中的下一个未完成任务。
+"
+    echo "$snapshot"
+}
+
+run_harness_check() {
     local round="$1"
-    local tmp_log
-    tmp_log=$(mktemp)
-    local tmp_err
-    tmp_err=$(mktemp)
+    local segment_index="$2"
+    local max_retries="$3"
+    local segment_log="$4"
+    local harness_model="$5"
 
-    log_sep
-    log_run "Round $round"
-    log_note "  Session mode: $([ "$SESSION_ACTIVE" = true ] && echo continue || echo fresh)"
-    log_note "  Prompt file:  $PROMPT_TEMPLATE_FILE"
-    log_note "  Stream mode:  $STREAM_PROGRESS"
-    log_key "  Limits:       turns=$MAX_TURNS budget=\$$MAX_BUDGET"
+    if [ ! -s "$segment_log" ]; then
+        echo '{"harness":true,"comment":"empty segment"}'
+        return 0
+    fi
 
-    local exit_code=0
+    local result
+    result=$(node "$AUTOFISH_ROOT/harness-check.js" "$segment_log" "$harness_model" "$max_retries" 2>/dev/null)
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        log_error "Harness check r${round}s${segment_index}: node harness-check.js exit=$exit_code"
+        return 1
+    fi
+
+    if [ -z "$result" ]; then
+        log_error "Harness check r${round}s${segment_index}: empty result"
+        return 1
+    fi
+
+    echo "$result"
+    return 0
+}
+
+_run_cc_single_segment() {
+    local round="$1"
+    local tmp_log="$2"
+    local tmp_err="$3"
+
     local prompt_text
     prompt_text="$(build_runtime_context)
 
@@ -676,6 +767,8 @@ $(cat "$PROMPT_TEMPLATE_FILE")"
 
     local cache_flag="--exclude-dynamic-system-prompt-sections"
     local progress_filter="$AUTOFISH_ROOT/progress-filter.js"
+
+    local exit_code=0
 
     if [ "$STREAM_PROGRESS" = true ] && [ -f "$progress_filter" ]; then
         log_key "Mode: stream (filter: $progress_filter)"
@@ -744,10 +837,213 @@ $(cat "$PROMPT_TEMPLATE_FILE")"
         log_warn "CC stdout (${out_size:-0} bytes)"
     fi
 
-    rm -f "$tmp_log" "$tmp_err"
-
     log_note "Round $round end (exit=$exit_code)"
     return $exit_code
+}
+
+run_cc_round() {
+    local round="$1"
+    local tmp_log
+    tmp_log=$(mktemp)
+    local tmp_err
+    tmp_err=$(mktemp)
+
+    log_sep
+    log_run "Round $round"
+
+    local harness_enabled
+    harness_enabled=$(config_val "harness.enabled" "true")
+    local harness_interval
+    harness_interval=$(config_val "harness.check_interval_turns" "15")
+    local harness_max_retries
+    harness_max_retries=$(config_val "harness.max_retries" "3")
+    local harness_model
+    harness_model=$(config_val "harness.model" "haiku")
+
+    log_note "  Session mode: $([ "$SESSION_ACTIVE" = true ] && echo continue || echo fresh)"
+    log_note "  Prompt file:  $PROMPT_TEMPLATE_FILE"
+    log_key "  Limits:       turns=$MAX_TURNS budget=\$$MAX_BUDGET"
+
+    if [ "$harness_enabled" != "true" ]; then
+        log_key "  Harness:      disabled (single-segment mode)"
+        _run_cc_single_segment "$round" "$tmp_log" "$tmp_err"
+        local exit_code=$?
+        rm -f "$tmp_log" "$tmp_err"
+        return $exit_code
+    fi
+
+    # === Harness-enabled segment loop ===
+    log_key "  Harness:      interval=${harness_interval}t model=$harness_model"
+
+    local total_turns=$MAX_TURNS
+    local remaining_turns=$total_turns
+    local segment_index=0
+    local correction_note=""
+    local round_exit=0
+    local first_segment=true
+
+    local segment_log
+    segment_log=$(mktemp)
+
+    while [ $remaining_turns -gt 0 ]; do
+        [ -f "$STOP_FILE" ] && break
+
+        segment_index=$((segment_index + 1))
+        local segment_turns=$harness_interval
+        [ $segment_turns -gt $remaining_turns ] && segment_turns=$remaining_turns
+
+        # --- Build segment prompt ---
+        local segment_prompt
+        if $first_segment && [ "$SESSION_ACTIVE" != "true" ]; then
+            segment_prompt="$(build_runtime_context)
+
+## 任务规则（首轮完整版）
+$(cat "$PROMPT_TEMPLATE_FILE")"
+        elif $first_segment; then
+            segment_prompt="$(build_runtime_context)
+
+## 当前进度
+$(build_progress_snapshot)
+开发规则与之前一致。直接继续执行下一个未完成任务，只在不确定进度时才查阅 project.md。"
+        else
+            local correction_text=""
+            [ -n "$correction_note" ] && correction_text="## 监督纠正
+$correction_note
+
+"
+            segment_prompt="${correction_text}## 当前进度
+$(build_progress_snapshot)
+继续。规则不变。"
+        fi
+
+        log_note "Segment ${round}.${segment_index}: turns=${segment_turns} chars=${#segment_prompt}"
+        [ -n "$correction_note" ] && log_warn "  Correction: $correction_note"
+
+        # --- Run CC for this segment ---
+        local continue_flag=""
+        if [ "$SESSION_ACTIVE" = "true" ] || [ $segment_index -gt 1 ]; then
+            continue_flag="--continue"
+        fi
+
+        local segment_exit=0
+        : > "$segment_log"
+
+        claude -p "$segment_prompt" \
+            $continue_flag \
+            --exclude-dynamic-system-prompt-sections \
+            --permission-mode auto \
+            --max-turns "$segment_turns" \
+            --max-budget-usd "$MAX_BUDGET" \
+            --verbose \
+            > "$tmp_log" 2>"$tmp_err" &
+        CURRENT_CC_PID=$!
+
+        local start_ts
+        start_ts=$(date +%s)
+        local spin_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        local spin_idx=0
+
+        while kill -0 $CURRENT_CC_PID 2>/dev/null; do
+            [ -f "$STOP_FILE" ] && { kill -INT "$CURRENT_CC_PID" 2>/dev/null || true; break; }
+            local now_ts
+            now_ts=$(date +%s)
+            local elapsed=$((now_ts - start_ts))
+            local min=$((elapsed / 60))
+            local sec=$((elapsed % 60))
+            local spin="${spin_chars:$spin_idx:1}"
+            spin_idx=$(( (spin_idx + 1) % ${#spin_chars} ))
+            if [ -n "$NO_COLOR_MODE" ] || [ ! -t 1 ]; then
+                printf "\r  %s [%02d:%02d] S${segment_index}..." "$spin" "$min" "$sec"
+            else
+                printf "\r%s  %s [%02d:%02d] S${segment_index}...%s" "$c_run" "$spin" "$min" "$sec" "$c_reset"
+            fi
+            sleep 0.3
+        done
+        printf "\r\x1b[K"
+
+        wait $CURRENT_CC_PID || segment_exit=$?
+        CURRENT_CC_PID=""
+
+        cat "$tmp_log" >> "$LOG_FILE"
+        cat "$tmp_log" >> "$segment_log"
+        cat "$tmp_log"
+
+        if [ "$segment_exit" -ne 0 ]; then
+            local err_size
+            err_size=$(wc -c < "$tmp_err" 2>/dev/null | tr -d '[:space:]')
+            log_warn "Segment ${round}.${segment_index} stderr (${err_size:-0} bytes): $(head -3 "$tmp_err" 2>/dev/null | tr '\n' ' ')"
+            round_exit=$segment_exit
+            break
+        fi
+
+        SESSION_ACTIVE=true
+        first_segment=false
+
+        remaining_turns=$((remaining_turns - segment_turns))
+        [ $remaining_turns -le 0 ] && { log_note "Segment ${round}.${segment_index}: turns budget exhausted"; break; }
+
+        # --- Check stop conditions ---
+        local stop_check
+        stop_check=$(check_stop_conditions "$round")
+        if [ "$stop_check" != "CONTINUE" ]; then
+            log_note "Segment ${round}.${segment_index}: stop condition $stop_check"
+            break
+        fi
+
+        # --- Harness check ---
+        log_note "Harness r${round}s${segment_index} (${remaining_turns} turns left)..."
+
+        local harness_result
+        harness_result=$(run_harness_check "$round" "$segment_index" "$harness_max_retries" "$segment_log" "$harness_model")
+        local harness_exit=$?
+
+        if [ $harness_exit -ne 0 ]; then
+            log_error "[FATAL] Harness check r${round}s${segment_index} failed after $harness_max_retries retries. See harness-check.js errors."
+            echo "HARNESS_FAILURE r${round}s${segment_index}" >> "$BLOCKED_FILE"
+            round_exit=1
+            break
+        fi
+
+        local _htmp
+        _htmp=$(mktemp)
+        echo "$harness_result" > "$_htmp"
+
+        local on_track
+        on_track=$(node -e "
+            const fs=require('fs');
+            try{const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(String(d.harness))}
+            catch{process.stdout.write('true')}
+        " "$_htmp" 2>/dev/null)
+
+        if [ "$on_track" = "false" ]; then
+            local comment
+            comment=$(node -e "
+                const fs=require('fs');
+                try{const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(d.comment||'偏离方向')}
+                catch{process.stdout.write('偏离方向')}
+            " "$_htmp" 2>/dev/null)
+            log_warn "Harness r${round}s${segment_index}: OFF-TRACK — $comment"
+            correction_note="[监督纠正] 上段偏离方向：$comment。请回到 project.md 任务清单正轨，继续执行下一个未完成任务。"
+        else
+            local comment_ok
+            comment_ok=$(node -e "
+                const fs=require('fs');
+                try{const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(d.comment||'ok')}
+                catch{process.stdout.write('ok')}
+            " "$_htmp" 2>/dev/null)
+            log_run "Harness r${round}s${segment_index}: on track — $comment_ok"
+            correction_note=""
+        fi
+
+        rm -f "$_htmp"
+
+        : > "$segment_log"
+    done
+
+    rm -f "$tmp_log" "$tmp_err" "$segment_log"
+
+    log_note "Round $round end (exit=$round_exit)"
+    return $round_exit
 }
 
 generate_what_need_to_do() {

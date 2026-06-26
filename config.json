@@ -92,5 +92,16 @@
     "last_finished_at": null,
     "last_blocked_at": null,
     "last_resolved_at": null
+  },
+  "harness": {
+    "_comment": "运行时 Harness 监督。每 N turns 用轻量模型检查 agent 是否偏离方向。",
+    "enabled": true,
+    "enabled_comment": "是否启用 harness 监督。false = 恢复传统单段模式",
+    "check_interval_turns": 15,
+    "check_interval_turns_comment": "每 N turns 暂停并运行一次 harness 检查。推荐 10-15",
+    "max_retries": 3,
+    "max_retries_comment": "harness 检查返回非标准格式时的最大重试次数",
+    "model": "haiku",
+    "model_comment": "harness 检查使用的模型。haiku 性价比最高，也可用 sonnet"
   }
 }

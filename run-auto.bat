@@ -124,6 +124,9 @@ if not exist "%AUTOFISH_ROOT%autofish.js" (
 if not exist "%AUTOFISH_ROOT%progress-filter.js" (
     echo %C_WARN%[WARN] progress-filter.js not found. AutoFish will fall back to spinner mode.%C_RESET%
 )
+if not exist "%AUTOFISH_ROOT%harness-check.js" (
+    echo %C_WARN%[WARN] harness-check.js not found. Harness supervision will fail if enabled.%C_RESET%
+)
 
 echo.
 set "AUTOFISH_BASH=%BASH%"
