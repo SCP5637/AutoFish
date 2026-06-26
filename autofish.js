@@ -671,6 +671,11 @@ function blockedInteractionReason(project) {
   }
 
   if (fs.existsSync(path.join(normalized.runtimeDir, 'WhatNeedToDo.md'))) {
+    const checklist = readWntdChecklistState(project);
+    if (checklist && checklist.unresolved === 0 && checklist.resolved > 0) {
+      cleanupResolvedWntdArtifacts(project);
+      return null;
+    }
     return 'WhatNeedToDo.md already exists';
   }
 
@@ -742,13 +747,10 @@ function decidePostWntdAction(project, projectConfig, nextStatus) {
   const allResolved = Boolean(wntdState && wntdState.unresolved === 0 && wntdState.resolved > 0);
 
   if (allResolved) {
-    if (wntdConfig.continue_after_resolved === true) {
-      return { action: 'continue', wntdState, shouldCleanup: true };
-    }
     if (wntdConfig.continue_after_resolved === false) {
-      return { action: 'pause', wntdState, shouldCleanup: false };
+      return { action: 'pause', wntdState, shouldCleanup: true };
     }
-    return { action: 'stop', wntdState, shouldCleanup: false };
+    return { action: 'continue', wntdState, shouldCleanup: true };
   }
 
   if (nextStatus !== 'blocked') {
