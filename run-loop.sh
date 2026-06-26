@@ -45,12 +45,12 @@ CURRENT_CC_PID=""
 STOP_REASON=""
 NO_COLOR_MODE="${NO_COLOR:-}"
 
-c_reset="\033[0m"
-c_note="\033[90m"
-c_run="\033[33m"
-c_key="\033[96m"
-c_warn="\033[93m"
-c_error="\033[91m"
+c_reset=$'\033[0m'
+c_note=$'\033[90m'
+c_run=$'\033[33m'
+c_key=$'\033[96m'
+c_warn=$'\033[93m'
+c_error=$'\033[91m'
 
 config_val() {
     local key="$1"
@@ -969,11 +969,15 @@ $(build_progress_snapshot)
         cat "$tmp_log"
 
         if [ "$segment_exit" -ne 0 ]; then
-            local err_size
-            err_size=$(wc -c < "$tmp_err" 2>/dev/null | tr -d '[:space:]')
-            log_warn "Segment ${round}.${segment_index} stderr (${err_size:-0} bytes): $(head -3 "$tmp_err" 2>/dev/null | tr '\n' ' ')"
-            round_exit=$segment_exit
-            break
+            if grep -qE "Reached max turns|max turns" "$tmp_err" 2>/dev/null; then
+                log_note "Segment ${round}.${segment_index}: hit turn limit (normal)"
+            else
+                local err_size
+                err_size=$(wc -c < "$tmp_err" 2>/dev/null | tr -d '[:space:]')
+                log_warn "Segment ${round}.${segment_index} stderr (${err_size:-0} bytes): $(head -3 "$tmp_err" 2>/dev/null | tr '\n' ' ')"
+                round_exit=$segment_exit
+                break
+            fi
         fi
 
         SESSION_ACTIVE=true
