@@ -147,6 +147,38 @@ box_sep() {
     printf '\n'
 }
 
+box_kv() {
+    local key="$1" val="$2" col="${3:-}" w="${4:-60}"
+    detect_box_chars
+    local lhs="  $key"
+    printf '%b' "$BOX_VT"
+    colorize "$c_note" "$lhs"
+    [ -n "$col" ] && colorize "$col" "$val" || printf '%s' "$val"
+    local pad=$((w - 2 - ${#lhs} - ${#val}))
+    [ "$pad" -lt 0 ] && pad=0
+    printf '%*s%s\n' "$pad" "" "$BOX_VT"
+}
+
+hud_line() {
+    local round="${1:-}"
+    local task="${2:-}"
+    local elapsed="${3:-}"
+    local tokens="${4:-}"
+    local budget="${5:-}"
+    detect_box_chars
+
+    local parts=""
+    [ -n "$round" ] && parts="${parts}$(colorize "$c_note" "R:")$(colorize "$c_key" "$round")  "
+    [ -n "$task" ] && parts="${parts}$(colorize "$c_note" "Task:")$(colorize "$c_key" "$task")  "
+    [ -n "$elapsed" ] && parts="${parts}$(colorize "$c_note" "T:")$(colorize "$c_key" "$elapsed")  "
+    [ -n "$tokens" ] && parts="${parts}$(colorize "$c_note" "Tok:")$(colorize "$c_key" "$tokens")  "
+    [ -n "$budget" ] && parts="${parts}$(colorize "$c_note" "Budget:")$(colorize "$c_key" "$budget")"
+
+    parts="${parts%"${parts##*[![:space:]]}"}"
+
+    printf '%s\n' "$parts"
+}
+
 config_val() {
     local key="$1"
     local default="$2"
@@ -269,14 +301,15 @@ EOF
 }
 
 init_git_state() {
+    detect_box_chars
     if git -C "$PROJECT_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
         GIT_AVAILABLE=true
         GIT_ROOT=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null | tr -d '\r\n')
-        log_key "Git mode: available ($GIT_ROOT)"
+        log_key "$CHECK Git: available ($GIT_ROOT)"
     else
         GIT_AVAILABLE=false
         GIT_ROOT=""
-        log_warn "Git mode: unavailable -> checkpoint fallback active"
+        log_warn "$CROSS Git: unavailable (checkpoint fallback)"
     fi
 }
 
@@ -396,20 +429,20 @@ check_plugins() {
     for plugin in $required; do
         [ -z "$plugin" ] && continue
         if ! check_single_plugin "$plugin"; then
-            log_error "[FATAL] Required plugin '$plugin' not installed or not active"
+            log_error "$CROSS Required plugin '$plugin' not installed"
             [ "$plugin" = "cc-safe-setup" ] && print_safe_setup_guidance
             missing_required=1
             continue
         fi
-        log_run "[PLUGIN] $plugin: installed (required)"
+        log_run "$CHECK Plugin $plugin: installed (required)"
     done
 
     for plugin in $optional; do
         [ -z "$plugin" ] && continue
         if check_single_plugin "$plugin"; then
-            log_run "[PLUGIN] $plugin: installed (optional)"
+            log_run "$CHECK Plugin $plugin: installed (optional)"
         else
-            log_warn "[WARN] Optional plugin '$plugin' not installed or not active"
+            log_warn "$CROSS Plugin $plugin: not installed (optional)"
             [ "$plugin" = "cc-safe-setup" ] && print_safe_setup_guidance
         fi
     done
@@ -482,7 +515,7 @@ validate_project_doc() {
         return 1
     fi
 
-    log_key "project.md validation: PASSED"
+    log_key "$CHECK project.md validation: PASSED"
     return 0
 }
 
@@ -503,7 +536,7 @@ validate_bootstrap_confirmation() {
         return 1
     fi
 
-    log_key "bootstrap confirmation: PASSED"
+    log_key "$CHECK bootstrap confirmation: PASSED"
     return 0
 }
 
@@ -515,7 +548,7 @@ check_safety() {
     fi
     local cc_version
     cc_version=$(claude --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    log_key "Claude Code version: ${cc_version:-unknown}"
+    log_key "$CHECK Claude Code: ${cc_version:-unknown}"
     if ! check_plugins; then
         return 1
     fi
@@ -944,9 +977,6 @@ run_cc_round() {
     local tmp_err
     tmp_err=$(mktemp)
 
-    log_sep
-    log_run "Round $round"
-
     local harness_enabled
     harness_enabled=$(config_val "harness.enabled" "true")
     local harness_interval
@@ -955,13 +985,32 @@ run_cc_round() {
     harness_max_retries=$(config_val "harness.max_retries" "3")
     local harness_model
     harness_model=$(config_val "harness.model" "haiku")
+    local session_mode
+    session_mode="$([ "$SESSION_ACTIVE" = true ] && echo continue || echo fresh)"
+    local harness_info
+    if [ "$harness_enabled" != "true" ]; then
+        harness_info="disabled (single-segment)"
+    else
+        harness_info="interval=${harness_interval}t model=$harness_model"
+    fi
 
-    log_note "  Session mode: $([ "$SESSION_ACTIVE" = true ] && echo continue || echo fresh)"
-    log_note "  Prompt file:  $PROMPT_TEMPLATE_FILE"
-    log_key "  Limits:       turns=$MAX_TURNS budget=\$$MAX_BUDGET"
+    local box_w=62
+    box_header "Round $round" "$box_w"
+    hud_line "$round" "" "" "" "\$$MAX_BUDGET"
+    box_sep "$box_w"
+    box_kv "Session: " "$session_mode" "$c_key" "$box_w"
+    box_kv "Prompt:  " "$PROMPT_TEMPLATE_FILE" "$c_note" "$box_w"
+    box_kv "Limits:  " "turns=$MAX_TURNS budget=\$$MAX_BUDGET" "$c_key" "$box_w"
+    box_kv "Harness: " "$harness_info" "$c_key" "$box_w"
+    box_footer "$box_w"
+
+    echo "[$(date '+%H:%M:%S')] Round $round" >> "$LOG_FILE"
+    echo "[$(date '+%H:%M:%S')]   Session: $session_mode" >> "$LOG_FILE"
+    echo "[$(date '+%H:%M:%S')]   Prompt:  $PROMPT_TEMPLATE_FILE" >> "$LOG_FILE"
+    echo "[$(date '+%H:%M:%S')]   Limits:  turns=$MAX_TURNS budget=\$$MAX_BUDGET" >> "$LOG_FILE"
+    echo "[$(date '+%H:%M:%S')]   Harness: $harness_info" >> "$LOG_FILE"
 
     if [ "$harness_enabled" != "true" ]; then
-        log_key "  Harness:      disabled (single-segment mode)"
         _run_cc_single_segment "$round" "$tmp_log" "$tmp_err"
         local exit_code=$?
         rm -f "$tmp_log" "$tmp_err"
@@ -969,7 +1018,6 @@ run_cc_round() {
     fi
 
     # === Harness-enabled segment loop ===
-    log_key "  Harness:      interval=${harness_interval}t model=$harness_model"
 
     local total_turns=$MAX_TURNS
     local remaining_turns=$total_turns
