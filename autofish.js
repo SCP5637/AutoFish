@@ -79,7 +79,7 @@ async function main() {
   }
 
   if (!fs.existsSync(selection.projectDir)) {
-    console.log(`\n${colorize('error', '=== Project missing ===')}`);
+    console.log(`\n${box.header('Project missing', W)}`);
     console.log(colorize('note', `Path: ${selection.projectDir}`));
     console.log(colorize('note', 'Re-register project with New Project.'));
     return;
@@ -263,8 +263,22 @@ function printMenu(registry) {
 }
 
 async function createNewProjectInteractive(registry) {
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+  const W = 80;
+  const ICON_WARN = unicode ? '⚠' : '[!!]';
+
+  function boxLine(inner, indent = 0) {
+    const prefix = ' '.repeat(indent * 2);
+    const plain = stripAnsi(prefix + inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+  }
+
   while (true) {
-    console.log(`\n${colorize('key', '=== New Project ===')}\n`);
+    console.log(`\n${box.header('New Project', W)}\n`);
     const raw = (await ask('Input project path (blank = cancel): ')).trim();
     if (!raw) {
       console.log('');
@@ -286,7 +300,11 @@ async function createNewProjectInteractive(registry) {
 
     const existing = registry.projects.find((project) => samePath(project.projectDir, resolved));
     if (existing) {
-      console.log(`\n${colorize('warn', `Using existing project -> ${existing.name}`)}\n`);
+      console.log('');
+      console.log(box.header('Project exists', W));
+      console.log(boxLine(palette.warn(ICON_WARN + ' Using existing project: ' + existing.name)));
+      console.log(box.footer(W));
+      console.log('');
       return normalizeProjectRecord(existing);
     }
 
@@ -299,9 +317,27 @@ async function createNewProjectInteractive(registry) {
 }
 
 async function resolveProjectPathInteractive(inputPath) {
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+  const W = 80;
+  const ICON_WARN = unicode ? '⚠' : '[!!]';
+
+  function boxLine(inner, indent = 0) {
+    const prefix = ' '.repeat(indent * 2);
+    const plain = stripAnsi(prefix + inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
+  }
+
   const normalizedInput = normalizeInputPath(inputPath);
   if (!normalizedInput) {
-    console.log(`\n${colorize('warn', '[PATH] Path invalid.')}\n`);
+    console.log('');
+    console.log(box.header('Path invalid', W));
+    console.log(boxLine(palette.warn(ICON_WARN + ' Input path could not be resolved.')));
+    console.log(box.footer(W));
+    console.log('');
     return null;
   }
 
@@ -326,15 +362,15 @@ async function resolveProjectPathInteractive(inputPath) {
   }
 
   console.log('');
-  console.log(colorize('key', '=== Detected projects ==='));
-  console.log(colorize('note', 'Current path is not a git project. Found multiple nearby projects:'));
+  console.log(box.header('Detected projects', W));
+  console.log(boxLine(palette.warn(ICON_WARN + ' Current path is not a git project. Found multiple nearby projects:'), 1));
   candidates.forEach((candidate, index) => {
-    console.log(colorize('note', `  ${index + 1}. ${candidate}`));
+    console.log(boxLine(palette.dim('  ' + (index + 1) + '. ' + candidate), 1));
   });
-  console.log('');
-  console.log(colorize('key', 'Actions:'));
-  console.log(colorize('run', '  C. Use current path anyway'));
-  console.log(colorize('run', '  R. Re-enter path'));
+  console.log(box.sep(W));
+  console.log(boxLine(palette.info('C. Use current path anyway')));
+  console.log(boxLine(palette.info('R. Re-enter path')));
+  console.log(box.footer(W));
   console.log('');
 
   while (true) {
@@ -352,7 +388,11 @@ async function resolveProjectPathInteractive(inputPath) {
       return candidates[index - 1];
     }
 
-    console.log(`\n${colorize('warn', '[INPUT] Invalid selection.')}\n`);
+    console.log('');
+    console.log(box.header('Invalid selection', W));
+    console.log(boxLine(palette.warn(ICON_WARN + ' Please enter a number (1-' + candidates.length + '), C, or R.')));
+    console.log(box.footer(W));
+    console.log('');
   }
 }
 
@@ -1011,29 +1051,45 @@ function openSafeSetupWindow(project, pluginReport) {
 function printSafeSetupLaunchResult(launched, report, project) {
   const box = createBox(process.env, process.stdout);
   const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
   const W = 80;
+  const ICON_OK = unicode ? '✓' : '[OK]';
+  const ICON_FAIL = unicode ? '✗' : '[XX]';
+  const ICON_WARN = unicode ? '⚠' : '[!!]';
 
-  const lines = [
-    palette.warn(`Project: ${project.projectDir}`),
-  ];
-  if (report.missingRequired.length > 0) {
-    lines.push(palette.warn(`Required: ${report.missingRequired.join(', ')}`));
-  }
-  if (report.missingOptional.length > 0) {
-    lines.push(palette.warn(`Optional: ${report.missingOptional.join(', ')}`));
-  }
-  lines.push('');
-  if (launched) {
-    lines.push(palette.info('Setup window opened.'));
-    lines.push(palette.dim('Complete install + doctor, then restart.'));
-  } else {
-    lines.push(palette.error('Failed to open setup window.'));
-    lines.push(palette.dim('npx cc-safe-setup'));
-    lines.push(palette.dim('npx cc-safe-setup --doctor'));
+  function boxLine(inner, indent = 0) {
+    const prefix = ' '.repeat(indent * 2);
+    const plain = stripAnsi(prefix + inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
   }
 
   console.log('');
-  console.log(box.section('Safety hooks required', lines, W));
+  console.log(box.header('Safety hooks required', W));
+  console.log(boxLine(palette.warn(ICON_WARN + ' Project: ' + project.projectDir)));
+
+  if (report.missingRequired.length > 0) {
+    console.log(boxLine(palette.warn(ICON_WARN + ' Required: ' + report.missingRequired.join(', '))));
+  }
+  if (report.missingOptional.length > 0) {
+    console.log(boxLine(palette.warn(ICON_WARN + ' Optional: ' + report.missingOptional.join(', '))));
+  }
+
+  console.log(box.sep(W));
+
+  if (launched) {
+    console.log(boxLine(palette.info(ICON_OK + ' Setup window opened.')));
+    console.log(boxLine(palette.dim('Complete install + doctor, then restart.')));
+  } else {
+    console.log(boxLine(palette.error(ICON_FAIL + ' Failed to open setup window.')));
+    console.log(box.sep(W));
+    console.log(boxLine(palette.info('install: npx cc-safe-setup'), 1));
+    console.log(boxLine(palette.info('verify:  npx cc-safe-setup --doctor'), 1));
+    console.log(boxLine(palette.info('after:   restart Claude Code / AutoFish'), 1));
+  }
+
+  console.log(box.footer(W));
   console.log('');
 }
 
@@ -1121,34 +1177,54 @@ function printWntdLaunchResult(project, options) {
     decision = 'continue',
   } = options;
 
-  console.log(colorize('warn', '=== WNTD review required ==='));
-  console.log(colorize('note', `Reason:      ${reason}`));
-  console.log(colorize('note', `Project:     ${project.projectDir}`));
-  console.log(colorize('note', `WNTD file:   ${toPosixPath(path.join(project.runtimeDir, 'WhatNeedToDo.md'))}`));
-  console.log(colorize('note', `Blocked:     ${toPosixPath(path.join(project.runtimeDir, 'task-blocked.txt'))}`));
-  if (nextStatus) {
-    console.log(colorize('key', `Next status: ${nextStatus}`));
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+  const W = 80;
+  const ICON_OK = unicode ? '✓' : '[OK]';
+  const ICON_FAIL = unicode ? '✗' : '[XX]';
+  const ICON_WARN = unicode ? '⚠' : '[!!]';
+
+  function boxLine(inner, indent = 0) {
+    const prefix = ' '.repeat(indent * 2);
+    const plain = stripAnsi(prefix + inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
   }
+
   console.log('');
+  console.log(box.header('WNTD review required', W));
+  console.log(boxLine(palette.warn(ICON_WARN + ' Reason: ' + reason)));
+  console.log(boxLine(palette.dim('Project:   ' + project.projectDir)));
+  console.log(boxLine(palette.dim('WNTD file: ' + toPosixPath(path.join(project.runtimeDir, 'WhatNeedToDo.md')))));
+  console.log(boxLine(palette.dim('Blocked:   ' + toPosixPath(path.join(project.runtimeDir, 'task-blocked.txt')))));
+  if (nextStatus) {
+    console.log(boxLine(palette.accent('Next status: ' + nextStatus)));
+  }
+
+  console.log(box.sep(W));
 
   if (phase === 'waiting') {
-    console.log(colorize('run', 'Opening Claude WNTD window.'));
-    console.log(colorize('note', 'AutoFish will wait until that window closes, then re-check runtime state.'));
+    console.log(boxLine(palette.info(ICON_OK + ' Opened Claude WNTD window.')));
+    console.log(boxLine(palette.dim('AutoFish will wait until that window closes, then re-check runtime state.')));
   } else if (!launched) {
-    console.log(colorize('error', '[ERROR] Failed to open Claude WNTD window.'));
-    console.log(colorize('note', `WNTD script: ${toPosixPath(path.join(project.stateDir, 'wntd-launch.ps1'))}`));
-    console.log(colorize('note', 'Run that script manually or fix terminal/permissions, then rerun AutoFish.'));
+    console.log(boxLine(palette.error(ICON_FAIL + ' Failed to open Claude WNTD window.')));
+    console.log(box.sep(W));
+    console.log(boxLine(palette.info('WNTD script: ' + toPosixPath(path.join(project.stateDir, 'wntd-launch.ps1'))), 1));
+    console.log(boxLine(palette.dim('Run that script manually or fix terminal/permissions, then rerun AutoFish.'), 1));
   } else if (decision === 'pause') {
-    console.log(colorize('run', 'WNTD resolved blocked items but user chose to pause automation.'));
-    console.log(colorize('note', 'AutoFish will stop here. Rerun AutoFish later to resume with current config.'));
+    console.log(boxLine(palette.warn(ICON_WARN + ' WNTD resolved blocked items but user chose to pause automation.')));
+    console.log(boxLine(palette.dim('AutoFish will stop here. Rerun AutoFish later to resume with current config.')));
   } else if (nextStatus === 'blocked') {
-    console.log(colorize('warn', 'Blocked items still remain after WNTD session.'));
-    console.log(colorize('note', 'Review WhatNeedToDo.md / task-blocked.txt, then rerun AutoFish after more input.'));
+    console.log(boxLine(palette.warn(ICON_WARN + ' Blocked items still remain after WNTD session.')));
+    console.log(boxLine(palette.dim('Review WhatNeedToDo.md / task-blocked.txt, then rerun AutoFish after more input.')));
   } else {
-    console.log(colorize('run', 'WNTD session cleared blocked state.'));
-    console.log(colorize('note', 'AutoFish will continue with normal run-loop.'));
+    console.log(boxLine(palette.info(ICON_OK + ' WNTD session cleared blocked state.')));
+    console.log(boxLine(palette.dim('AutoFish will continue with normal run-loop.')));
   }
 
+  console.log(box.footer(W));
   console.log('');
 }
 
@@ -1267,7 +1343,7 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
         confirmed_by: null,
         project_doc_source: 'none',
       }, projectConfig);
-      console.log(colorize('key', '\n=== All tasks completed ==='));
+      console.log(`\n${box.header('All tasks completed', W)}`);
       console.log(colorize('note', 'project.md archived to History/. Starting new bootstrap...\n'));
       return { archived: true };
     }
@@ -1428,24 +1504,44 @@ function printProjectSummary(project, projectConfig, status) {
 }
 
 function printBootstrapLaunchResult(project, projectConfig, launched, reason) {
-  console.log(colorize('warn', '=== Bootstrap required ==='));
-  console.log(colorize('note', `Reason:      ${reason}`));
-  console.log(colorize('note', `Project:     ${project.projectDir}`));
-  console.log(colorize('note', `Project doc: ${project.projectDoc}`));
-  console.log(colorize('note', `Config:      ${project.configFile}`));
-  console.log(colorize('key', `Bootstrap:   status=${projectConfig.bootstrap.status}, phase=${projectConfig.bootstrap.phase}`));
-  console.log('');
+  const box = createBox(process.env, process.stdout);
+  const palette = createPalette(process.env);
+  const unicode = supportsUnicode(process.env, process.stdout);
+  const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+  const W = 80;
+  const ICON_OK = unicode ? '✓' : '[OK]';
+  const ICON_FAIL = unicode ? '✗' : '[XX]';
+  const ICON_WARN = unicode ? '⚠' : '[!!]';
 
-  if (launched) {
-    console.log(colorize('run', 'Opened Claude bootstrap window.'));
-    console.log(colorize('note', 'Finish the five-stage Q&A there.'));
-    console.log(colorize('note', 'After final confirmation, rerun AutoFish from this terminal.'));
-  } else {
-    console.log(colorize('error', '[ERROR] Failed to open Claude bootstrap window.'));
-    console.log(colorize('note', `Bootstrap script: ${toPosixPath(path.join(project.stateDir, 'bootstrap-launch.ps1'))}`));
-    console.log(colorize('note', 'Run that script manually or fix terminal/permissions, then rerun AutoFish.'));
+  function boxLine(inner, indent = 0) {
+    const prefix = ' '.repeat(indent * 2);
+    const plain = stripAnsi(prefix + inner);
+    const pad = Math.max(0, W - 4 - plain.length);
+    return C.vt + ' ' + prefix + inner + ' '.repeat(pad) + C.vt;
   }
 
+  console.log('');
+  console.log(box.header('Bootstrap required', W));
+  console.log(boxLine(palette.warn(ICON_WARN + ' Reason: ' + reason)));
+  console.log(boxLine(palette.dim('Project:     ' + project.projectDir)));
+  console.log(boxLine(palette.dim('Project doc: ' + project.projectDoc)));
+  console.log(boxLine(palette.dim('Config:      ' + project.configFile)));
+  console.log(boxLine(palette.accent('Bootstrap:   status=' + projectConfig.bootstrap.status + ', phase=' + projectConfig.bootstrap.phase)));
+
+  console.log(box.sep(W));
+
+  if (launched) {
+    console.log(boxLine(palette.info(ICON_OK + ' Opened Claude bootstrap window.')));
+    console.log(boxLine(palette.dim('Finish the five-stage Q&A there.')));
+    console.log(boxLine(palette.dim('After final confirmation, rerun AutoFish from this terminal.')));
+  } else {
+    console.log(boxLine(palette.error(ICON_FAIL + ' Failed to open Claude bootstrap window.')));
+    console.log(box.sep(W));
+    console.log(boxLine(palette.info('Run: ' + toPosixPath(path.join(project.stateDir, 'bootstrap-launch.ps1'))), 1));
+    console.log(boxLine(palette.dim('Or fix terminal/permissions, then rerun AutoFish.'), 1));
+  }
+
+  console.log(box.footer(W));
   console.log('');
 }
 
