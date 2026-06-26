@@ -59,7 +59,7 @@ const DEFAULT_WNTD = Object.freeze({
   last_resolved_at: null,
 });
 
-const COLOR = buildColorPalette();
+const COLOR = createPalette(process.env.AUTOFISH_COLOR === 'never' ? { NO_COLOR: '1' } : process.env);
 
 main().catch((error) => {
   console.error(colorize('error', `[FATAL] ${error.message}`));
@@ -74,14 +74,14 @@ async function main() {
   const selection = await selectProject(registry);
 
   if (!selection) {
-    console.log(`\n${colorize('note', 'AutoFish exited.')}`);
+    console.log(`\n${colorize('dim', 'AutoFish exited.')}`);
     return;
   }
 
   if (!fs.existsSync(selection.projectDir)) {
     console.log(`\n${box.header('Project missing', W)}`);
-    console.log(colorize('note', `Path: ${selection.projectDir}`));
-    console.log(colorize('note', 'Re-register project with New Project.'));
+    console.log(colorize('dim', `Path: ${selection.projectDir}`));
+    console.log(colorize('dim', 'Re-register project with New Project.'));
     return;
   }
 
@@ -959,7 +959,7 @@ function inspectSafeSetup(options = {}) {
 
 function printPluginPreflight(report) {
   if (report.skipped) {
-    console.log(colorize('note', 'Plugin preflight skipped by config.'));
+    console.log(colorize('dim', 'Plugin preflight skipped by config.'));
     console.log('');
     return;
   }
@@ -1344,7 +1344,7 @@ async function runProjectWithWntd(project, projectConfig, initialWntdReason = nu
         project_doc_source: 'none',
       }, projectConfig);
       console.log(`\n${box.header('All tasks completed', W)}`);
-      console.log(colorize('note', 'project.md archived to History/. Starting new bootstrap...\n'));
+      console.log(colorize('dim', 'project.md archived to History/. Starting new bootstrap...\n'));
       return { archived: true };
     }
 
@@ -1707,19 +1707,6 @@ function commandExists(command) {
   const args = process.platform === 'win32' ? [command] : ['-v', command];
   const result = spawnSync(checker, args, { encoding: 'utf8', windowsHide: true, shell: process.platform !== 'win32' });
   return result.status === 0;
-}
-
-function buildColorPalette() {
-  const mode = process.env.NO_COLOR ? 'never' : (process.env.AUTOFISH_COLOR || 'auto');
-  const enabled = mode !== 'never';
-  const wrap = (code) => (text) => enabled ? `\x1b[${code}m${text}\x1b[0m` : text;
-  return {
-    note: wrap('90'),
-    run: wrap('33'),
-    key: wrap('96'),
-    warn: wrap('93'),
-    error: wrap('91'),
-  };
 }
 
 function colorize(kind, text) {

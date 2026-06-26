@@ -4,7 +4,11 @@ const fs = require('fs');
 
 const logFile = process.argv[2] || '';
 const roundLabel = process.argv[3] || '?';
-const noColor = Boolean(process.env.NO_COLOR);
+const { createPalette, supportsUnicode, UNICODE_CHARS, ASCII_CHARS, stripAnsi, stripBoxChars } = require('./ui-lib');
+const palette = createPalette(process.env);
+const unicode = supportsUnicode(process.env);
+const C = unicode ? UNICODE_CHARS : ASCII_CHARS;
+const CC_PRE = unicode ? '╰─ ' : '|_ ';
 
 let currentText = '';
 let currentMessageIndex = 0;
@@ -12,14 +16,6 @@ let firstSentenceEmitted = false;
 let seenSteps = new Set();
 let toolIndex = 0;
 let latestUsage = null;
-
-const colors = {
-  note: wrap('90'),
-  run: wrap('33'),
-  key: wrap('96'),
-  warn: wrap('93'),
-  error: wrap('91'),
-};
 
 process.stdin.setEncoding('utf8');
 
@@ -44,16 +40,14 @@ process.stdin.on('end', () => {
   flushCurrentMessage(true);
 });
 
-function wrap(code) {
-  return (text) => noColor ? text : `\x1b[${code}m${text}\x1b[0m`;
-}
-
 function print(kind, text) {
-  const line = colors[kind] ? colors[kind](text) : text;
+  const painter = palette[kind];
+  const line = painter ? painter(text) : text;
   process.stdout.write(`${line}\n`);
   if (logFile) {
     try {
-      fs.appendFileSync(logFile, `${text}\n`, 'utf8');
+      const clean = stripBoxChars(stripAnsi(text));
+      fs.appendFileSync(logFile, `${clean}\n`, 'utf8');
     } catch {}
   }
 }
@@ -109,7 +103,7 @@ function handleStreamEvent(event) {
     if (block.type === 'tool_use') {
       toolIndex += 1;
       const toolName = block.name || 'tool';
-      print('run', `Tool#${toolIndex}: ${toolName}`);
+      print('dim', `Tool#${toolIndex} ${C.hz} ${toolName}`);
       return;
     }
   }
@@ -143,13 +137,13 @@ function maybeEmitFirstSentence() {
   if (!sentence) {
     if (currentText.trim().length >= 80) {
       const clipped = currentText.trim().replace(/\s+/g, ' ').slice(0, 80);
-      print('run', `CC#${currentMessageIndex}: ${clipped}...`);
+      print('accent', `${CC_PRE}CC#${currentMessageIndex}: ${clipped}...`);
       firstSentenceEmitted = true;
     }
     return;
   }
 
-  print('run', `CC#${currentMessageIndex}: ${sentence}`);
+  print('accent', `${CC_PRE}CC#${currentMessageIndex}: ${sentence}`);
   firstSentenceEmitted = true;
 }
 
@@ -169,7 +163,7 @@ function emitSteps(text) {
       continue;
     }
     seenSteps.add(step);
-    print('note', `  step: ${step}`);
+    print('dim', `  ${C.bul} step: ${step}`);
   }
 }
 
@@ -179,7 +173,7 @@ function flushCurrentMessage(force) {
   }
   if (!firstSentenceEmitted && force) {
     const clipped = currentText.trim().replace(/\s+/g, ' ').slice(0, 120);
-    print('run', `CC#${currentMessageIndex || 1}: ${clipped}${currentText.trim().length > 120 ? '...' : ''}`);
+    print('accent', `${CC_PRE}CC#${currentMessageIndex || 1}: ${clipped}${currentText.trim().length > 120 ? '...' : ''}`);
     firstSentenceEmitted = true;
   }
 }
@@ -205,7 +199,15 @@ function emitUsageSummary(resultPayload) {
   const denominator = inputTokens + cacheCreate + cacheRead;
   const cacheHit = denominator > 0 ? ((cacheRead / denominator) * 100).toFixed(1) : '0.0';
 
-  print('key', `Round ${roundLabel} tokens: in=${inputTokens} out=${outputTokens} cache_create=${cacheCreate} cache_read=${cacheRead} cache_hit=${cacheHit}% cost=$${totalCost.toFixed(4)}`);
+  const durationMs = resultPayload.duration_ms || resultPayload.duration || 0;
+  const elapsed = durationMs ? (durationMs / 1000).toFixed(1) + 's' : '?s';
+  const line1 = `in=${inputTokens}  out=${outputTokens}  cache_read=${cacheRead}  hit=${cacheHit}%`;
+  const line2 = `cost=$${totalCost.toFixed(4)}  elapsed=${elapsed}`;
+  const boxWidth = Math.max(line1.length, line2.length) + 4;
+  console.log(palette.accent(`${C.tl}${C.hz} Round ${roundLabel} ${C.hz.repeat(Math.max(0, boxWidth - 4 - String(roundLabel).length - 8))}${C.tr}`));
+  console.log(palette.dim(`${C.vt} ${line1}${' '.repeat(Math.max(0, boxWidth - line1.length - 2))} ${C.vt}`));
+  console.log(palette.dim(`${C.vt} ${line2}${' '.repeat(Math.max(0, boxWidth - line2.length - 2))} ${C.vt}`));
+  console.log(palette.accent(`${C.bl}${C.hz.repeat(boxWidth - 2)}${C.br}`));
 }
 
 function numberOrZero(value) {
