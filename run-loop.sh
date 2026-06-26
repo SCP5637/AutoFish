@@ -46,11 +46,16 @@ STOP_REASON=""
 NO_COLOR_MODE="${NO_COLOR:-}"
 
 c_reset=$'\033[0m'
-c_note=$'\033[90m'
-c_run=$'\033[33m'
-c_key=$'\033[96m'
+c_dim=$'\033[90m'
+c_info=$'\033[33m'
+c_accent=$'\033[96m'
 c_warn=$'\033[93m'
 c_error=$'\033[91m'
+
+# 旧别名 — 向后兼容
+c_note=$c_dim
+c_run=$c_info
+c_key=$c_accent
 
 detect_box_chars() {
     local use_unicode=true
@@ -80,6 +85,7 @@ detect_box_chars() {
         CHECK="✓"
         CROSS="✗"
         WARN_SYM="⚠"
+        SPIN_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     else
         BOX_TL="+"
         BOX_TR="+"
@@ -94,6 +100,7 @@ detect_box_chars() {
         CHECK="[OK]"
         CROSS="[XX]"
         WARN_SYM="/!\\"
+        SPIN_CHARS="|/-\\"
     fi
 }
 
@@ -236,6 +243,10 @@ colorize() {
     printf '%b%s%b' "$color" "$text" "$c_reset"
 }
 
+strip_ansi() {
+    sed $'s/\033[[0-9;]*m//g'
+}
+
 log_plain() {
     local msg="[$(date '+%H:%M:%S')] $*"
     echo "$msg" >> "$LOG_FILE"
@@ -250,12 +261,17 @@ log_colored() {
     echo "$msg" >> "$LOG_FILE"
 }
 
-log_note() { log_colored "$c_note" "$@"; }
-log_run() { log_colored "$c_run" "$@"; }
-log_key() { log_colored "$c_key" "$@"; }
+log_dim() { log_colored "$c_dim" "$@"; }
+log_info() { log_colored "$c_info" "$@"; }
+log_accent() { log_colored "$c_accent" "$@"; }
 log_warn() { log_colored "$c_warn" "$@"; }
 log_error() { log_colored "$c_error" "$@"; }
-log() { log_note "$@"; }
+
+# 旧别名 — 向后兼容
+log_note() { log_dim "$@"; }
+log_run() { log_info "$@"; }
+log_key() { log_accent "$@"; }
+log() { log_dim "$@"; }
 
 log_sep() {
     local sep="============================================================"
@@ -914,7 +930,8 @@ $(cat "$PROMPT_TEMPLATE_FILE")"
             || exit_code=$?
     else
         log_warn "Mode: text (stream=$STREAM_PROGRESS, filter_exists=$([ -f "$progress_filter" ] && echo yes || echo no))"
-        local spin_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        detect_box_chars
+        local spin_len=${#SPIN_CHARS}
         local spin_idx=0
         local start_ts
         start_ts=$(date +%s)
@@ -939,21 +956,32 @@ $(cat "$PROMPT_TEMPLATE_FILE")"
             local elapsed=$((now_ts - start_ts))
             local min=$((elapsed / 60))
             local sec=$((elapsed % 60))
-            local spin="${spin_chars:$spin_idx:1}"
-            spin_idx=$(( (spin_idx + 1) % ${#spin_chars} ))
+            local spin="${SPIN_CHARS:$spin_idx:1}"
+            spin_idx=$(( (spin_idx + 1) % spin_len ))
             if [ -n "$NO_COLOR_MODE" ] || [ ! -t 1 ]; then
-                printf "\r  %s [%02d:%02d] CC 工作中..." "$spin" "$min" "$sec"
+                printf "\r  %s [%02d:%02d] CC working..." "$spin" "$min" "$sec"
             else
-                printf "\r%s  %s [%02d:%02d] CC 工作中...%s" "$c_run" "$spin" "$min" "$sec" "$c_reset"
+                printf "\r%s  %s [%02d:%02d] CC working...%s" "$c_run" "$spin" "$min" "$sec" "$c_reset"
             fi
             sleep 0.3
         done
-        printf "\r\x1b[K"
 
         wait $CURRENT_CC_PID || exit_code=$?
         CURRENT_CC_PID=""
 
-        cat "$tmp_log" >> "$LOG_FILE"
+        local now_ts
+        now_ts=$(date +%s)
+        local elapsed=$((now_ts - start_ts))
+        local elap_min=$((elapsed / 60))
+        local elap_sec=$((elapsed % 60))
+        printf "\r\x1b[K"
+        if [ "$exit_code" -eq 0 ]; then
+            log_run "$CHECK CC done (${elap_min}m ${elap_sec}s)"
+        else
+            log_error "$CROSS CC failed (${elap_min}m ${elap_sec}s)"
+        fi
+
+        cat "$tmp_log" | strip_ansi >> "$LOG_FILE"
         cat "$tmp_log"
     fi
 
@@ -1082,10 +1110,11 @@ $(build_progress_snapshot)
             > "$tmp_log" 2>"$tmp_err" &
         CURRENT_CC_PID=$!
 
+        detect_box_chars
+        local spin_len=${#SPIN_CHARS}
+        local spin_idx=0
         local start_ts
         start_ts=$(date +%s)
-        local spin_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        local spin_idx=0
 
         while kill -0 $CURRENT_CC_PID 2>/dev/null; do
             [ -f "$STOP_FILE" ] && { kill -INT "$CURRENT_CC_PID" 2>/dev/null || true; break; }
@@ -1094,8 +1123,8 @@ $(build_progress_snapshot)
             local elapsed=$((now_ts - start_ts))
             local min=$((elapsed / 60))
             local sec=$((elapsed % 60))
-            local spin="${spin_chars:$spin_idx:1}"
-            spin_idx=$(( (spin_idx + 1) % ${#spin_chars} ))
+            local spin="${SPIN_CHARS:$spin_idx:1}"
+            spin_idx=$(( (spin_idx + 1) % spin_len ))
             if [ -n "$NO_COLOR_MODE" ] || [ ! -t 1 ]; then
                 printf "\r  %s [%02d:%02d] S${segment_index}..." "$spin" "$min" "$sec"
             else
@@ -1103,12 +1132,23 @@ $(build_progress_snapshot)
             fi
             sleep 0.3
         done
-        printf "\r\x1b[K"
 
         wait $CURRENT_CC_PID || segment_exit=$?
         CURRENT_CC_PID=""
 
-        cat "$tmp_log" >> "$LOG_FILE"
+        local now_ts
+        now_ts=$(date +%s)
+        local elapsed=$((now_ts - start_ts))
+        local elap_min=$((elapsed / 60))
+        local elap_sec=$((elapsed % 60))
+        printf "\r\x1b[K"
+        if [ "$segment_exit" -eq 0 ]; then
+            log_run "$CHECK S${segment_index} done (${elap_min}m ${elap_sec}s)"
+        else
+            log_error "$CROSS S${segment_index} failed (${elap_min}m ${elap_sec}s)"
+        fi
+
+        cat "$tmp_log" | strip_ansi >> "$LOG_FILE"
         cat "$tmp_log" >> "$segment_log"
         cat "$tmp_log"
 
@@ -1170,7 +1210,7 @@ $(build_progress_snapshot)
                 try{const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(d.comment||'偏离方向')}
                 catch{process.stdout.write('偏离方向')}
             " "$_htmp" 2>/dev/null)
-            log_warn "Harness r${round}s${segment_index}: OFF-TRACK — $comment"
+            log_warn "$WARN_SYM Harness r${round}s${segment_index}: OFF-TRACK — $comment"
             correction_note="[监督纠正] 上段偏离方向：$comment。请回到 project.md 任务清单正轨，继续执行下一个未完成任务。"
         else
             local comment_ok
@@ -1179,7 +1219,7 @@ $(build_progress_snapshot)
                 try{const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(d.comment||'ok')}
                 catch{process.stdout.write('ok')}
             " "$_htmp" 2>/dev/null)
-            log_run "Harness r${round}s${segment_index}: on track — $comment_ok"
+            log_run "$CHECK Harness r${round}s${segment_index}: on track — $comment_ok"
             correction_note=""
         fi
 
@@ -1230,7 +1270,7 @@ EOF
         --permission-mode auto \
         --max-turns 15 \
         --max-budget-usd 0.50 \
-        2>&1 | tee -a "$LOG_FILE" || true
+        2>&1 | strip_ansi | tee -a "$LOG_FILE" || true
 
     if [ -f "$WNTD_FILE" ]; then
         log_key "WhatNeedToDo.md generated: $WNTD_FILE"
@@ -1377,28 +1417,28 @@ main() {
 
         case "$stop_reason" in
             ALL_COMPLETE)
-                log_key ">>> All tasks complete!"
+                log_key "$CHECK All tasks complete!"
                 break
                 ;;
             ALL_BLOCKED)
-                log_warn ">>> All remaining tasks blocked, human review needed"
+                log_warn "$WARN_SYM All remaining tasks blocked, human review needed"
                 generate_what_need_to_do
                 break
                 ;;
             MAX_ROUNDS)
-                log_warn ">>> Max rounds reached ($MAX_ROUNDS)"
+                log_warn "$ARROW Max rounds reached ($MAX_ROUNDS)"
                 break
                 ;;
             RUNTIME_LIMIT)
-                log_warn ">>> Runtime limit reached"
+                log_warn "$ARROW Runtime limit reached"
                 break
                 ;;
             STOP_TIME)
-                log_warn ">>> Stop time reached"
+                log_warn "$ARROW Stop time reached"
                 break
                 ;;
             USER_STOP)
-                log_warn ">>> User requested stop"
+                log_warn "$ARROW User requested stop"
                 break
                 ;;
             CONTINUE)
@@ -1416,7 +1456,7 @@ main() {
                 fi
 
                 if [ "$stale_count" -ge 5 ]; then
-                    log_warn ">>> ${stale_count} rounds with no progress, stopping"
+                    log_warn "$WARN_SYM ${stale_count} rounds with no progress, stopping"
                     echo "ALL_BLOCKED" >> "$BLOCKED_FILE"
                     generate_what_need_to_do
                     break
@@ -1425,13 +1465,18 @@ main() {
         esac
 
         round=$((round + 1))
-        log_key "Sleeping ${SLEEP_SEC}s..."
         local slept=0
         while [ "$slept" -lt "$SLEEP_SEC" ]; do
-            [ -f "$STOP_FILE" ] && break
-            sleep 1
-            slept=$((slept + 1))
+            [ -f "$STOP_FILE" ] && { printf '\n'; break; }
+            local remaining=$((SLEEP_SEC - slept))
+            printf '\r[%s] Sleeping... %ds remaining ' "$(date '+%H:%M:%S')" "$remaining"
+            local step=5
+            [ "$remaining" -lt "$step" ] && step=$remaining
+            sleep $step
+            slept=$((slept + step))
         done
+        printf '\n'
+        echo "[$(date '+%H:%M:%S')] Sleeping ${SLEEP_SEC}s..." >> "$LOG_FILE"
     done
 
     log_sep
@@ -1440,47 +1485,48 @@ main() {
     log_sep
 
     echo ""
-    if [ -n "$NO_COLOR_MODE" ] || [ ! -t 1 ]; then
-        echo "=== Summary ==="
-        echo "Project id:   $PROJECT_ID"
-        echo "Project doc:  $PROJECT_DOC_FILE"
-        echo "Runtime dir:  $RUNTIME_DIR"
-        echo "Total rounds: $round"
-        echo "Stop reason:  $stop_reason"
-        echo ""
-        echo "=== Files ==="
-        echo "Done:         $DONE_FILE"
-        echo "Blocked:      $BLOCKED_FILE"
-        echo "Log:          $LOG_FILE"
-        echo ""
-        echo "=== Next actions ==="
-        echo "Review files above."
-        if $GIT_AVAILABLE; then
-            echo "Rollback: git log --oneline | grep 'pre-autonomous'"
-        else
-            echo "Rollback: unavailable (non-git project / checkpoint skipped)"
-        fi
-        echo ""
+    local box_w=62
+    box_header "Final summary" "$box_w"
+
+    _box_kv_final() {
+        local _lbl="$1" _val="$2" _col="$3"
+        local _pfx="  $_lbl"
+        printf '%b' "$BOX_VT$c_note$_pfx$c_reset"
+        colorize "$_col" "$_val"
+        local _pad=$((box_w - 2 - ${#_pfx} - ${#_val}))
+        [ "$_pad" -lt 0 ] && _pad=0
+        printf '%*s%s\n' "$_pad" "" "$BOX_VT"
+        echo "[$(date '+%H:%M:%S')] $_pfx$_val" >> "$LOG_FILE"
+    }
+
+    _box_kv_final "Total rounds:" "$round" "$c_key"
+    _box_kv_final "Stop reason: " "$stop_reason" "$c_key"
+    _box_kv_final "Project id:   " "$PROJECT_ID" "$c_note"
+    _box_kv_final "Project root: " "$PROJECT_DIR" "$c_note"
+    _box_kv_final "Project doc:  " "$PROJECT_DOC_FILE" "$c_note"
+    _box_kv_final "Runtime dir:  " "$RUNTIME_DIR" "$c_note"
+
+    box_sep "$box_w"
+    box_line "Files" "$box_w"
+
+    _box_kv_final "Done:         " "$DONE_FILE" "$c_note"
+    _box_kv_final "Blocked:      " "$BLOCKED_FILE" "$c_note"
+    _box_kv_final "Log:          " "$LOG_FILE" "$c_note"
+    _box_kv_final "Rounds:       " "$ROUND_FILE" "$c_note"
+    _box_kv_final "WNTD:         " "$WNTD_FILE" "$c_note"
+    _box_kv_final "Config:       " "$PROJECT_CONFIG_FILE" "$c_note"
+
+    box_sep "$box_w"
+    box_line "$BUL Next" "$box_w"
+    box_line " Review files above." "$box_w"
+    if $GIT_AVAILABLE; then
+        box_line " Rollback: git log --oneline | grep 'pre-autonomous'" "$box_w"
     else
-        colorize "$c_key" "=== Summary ==="; printf '\n'
-        colorize "$c_note" "Project id:   $PROJECT_ID"; printf '\n'
-        colorize "$c_note" "Project doc:  $PROJECT_DOC_FILE"; printf '\n'
-        colorize "$c_note" "Runtime dir:  $RUNTIME_DIR"; printf '\n'
-        colorize "$c_key" "Total rounds: $round"; printf '\n'
-        colorize "$c_key" "Stop reason:  $stop_reason"; printf '\n\n'
-        colorize "$c_key" "=== Files ==="; printf '\n'
-        colorize "$c_note" "Done:         $DONE_FILE"; printf '\n'
-        colorize "$c_note" "Blocked:      $BLOCKED_FILE"; printf '\n'
-        colorize "$c_note" "Log:          $LOG_FILE"; printf '\n\n'
-        colorize "$c_key" "=== Next actions ==="; printf '\n'
-        colorize "$c_note" "Review files above."; printf '\n'
-        if $GIT_AVAILABLE; then
-            colorize "$c_note" "Rollback: git log --oneline | grep 'pre-autonomous'"; printf '\n'
-        else
-            colorize "$c_note" "Rollback: unavailable (non-git project / checkpoint skipped)"; printf '\n'
-        fi
-        printf '\n'
+        box_line " Rollback: unavailable (non-git project / checkpoint skipped)" "$box_w"
     fi
+
+    box_footer "$box_w"
+    echo ""
 }
 
 main "$@"
