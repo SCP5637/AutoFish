@@ -125,8 +125,21 @@ async function main() {
     if (launchPlan.type === 'bootstrap') {
       projectConfig = markBootstrapLaunch(selection, projectConfig, launchPlan.mode);
       const launched = openBootstrapWindow(selection, projectConfig, launchPlan.mode, launchPlan.reason);
-      printBootstrapLaunchResult(selection, projectConfig, launched, launchPlan.reason);
-      return;
+      if (!launched) {
+        printBootstrapLaunchResult(selection, projectConfig, launched, launchPlan.reason);
+        return;
+      }
+      projectConfig = ensureProjectState(selection);
+      if (!isBootstrapConfirmed(projectConfig)) {
+        printBootstrapLaunchResult(selection, projectConfig, launched, launchPlan.reason);
+        const retry = await confirm('Bootstrap not complete. Open bootstrap window again? [Y/n]: ', true);
+        if (retry) {
+          continue;
+        }
+        return;
+      }
+      console.log(colorize('info', 'Bootstrap confirmed. Continuing to run-loop...\n'));
+      continue;
     }
 
     const initialWntdReason = launchPlan.type === 'wntd' ? launchPlan.reason : null;
@@ -1127,8 +1140,9 @@ function openBootstrapWindow(project, projectConfig, mode, reason) {
       AUTOFISH_BOOTSTRAP_MODE: mode,
       AUTOFISH_BOOTSTRAP_STATUS: projectConfig.bootstrap.status,
     },
+    waitForExit: true,
     missingClaudeHint: 'Close this window after fixing PATH, then rerun AutoFish.',
-    exitHint: 'Bootstrap session ended. Return to AutoFish when project.md/config confirmation is done.',
+    exitHint: 'Bootstrap session ended. AutoFish will now check if bootstrap is complete.',
   });
 }
 
@@ -1532,8 +1546,7 @@ function printBootstrapLaunchResult(project, projectConfig, launched, reason) {
 
   if (launched) {
     console.log(boxLine(palette.info(ICON_OK + ' Opened Claude bootstrap window.')));
-    console.log(boxLine(palette.dim('Finish the five-stage Q&A there.')));
-    console.log(boxLine(palette.dim('After final confirmation, rerun AutoFish from this terminal.')));
+    console.log(boxLine(palette.dim('Complete the five-stage Q&A in that window.')));
   } else {
     console.log(boxLine(palette.error(ICON_FAIL + ' Failed to open Claude bootstrap window.')));
     console.log(box.sep(W));
