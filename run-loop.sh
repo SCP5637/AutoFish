@@ -52,6 +52,101 @@ c_key=$'\033[96m'
 c_warn=$'\033[93m'
 c_error=$'\033[91m'
 
+detect_box_chars() {
+    local use_unicode=true
+
+    [ -n "$NO_COLOR_MODE" ] && use_unicode=false
+    [ ! -t 1 ] && use_unicode=false
+
+    if [ "$use_unicode" = true ]; then
+        local has_unicode_term=false
+        [ -n "$WT_SESSION" ] && has_unicode_term=true
+        [[ "$LANG" =~ UTF-8 ]] && has_unicode_term=true
+        [[ "$TERM_PROGRAM" =~ mintty|vscode|Hyper|tabby|alacritty|kitty|wezterm ]] && has_unicode_term=true
+        [ "$has_unicode_term" = false ] && use_unicode=false
+    fi
+
+    if [ "$use_unicode" = true ]; then
+        BOX_TL="┌"
+        BOX_TR="┐"
+        BOX_BL="└"
+        BOX_BR="┘"
+        BOX_HZ="─"
+        BOX_VT="│"
+        BOX_LT="├"
+        BOX_RT="┤"
+        BUL="▸"
+        ARROW="→"
+        CHECK="✓"
+        CROSS="✗"
+        WARN_SYM="⚠"
+    else
+        BOX_TL="+"
+        BOX_TR="+"
+        BOX_BL="+"
+        BOX_BR="+"
+        BOX_HZ="-"
+        BOX_VT="|"
+        BOX_LT="+"
+        BOX_RT="+"
+        BUL=">"
+        ARROW="->"
+        CHECK="[OK]"
+        CROSS="[XX]"
+        WARN_SYM="/!\\"
+    fi
+}
+
+box_header() {
+    local title="${1:-}"
+    local width="${2:-60}"
+    detect_box_chars
+    if [ -z "$title" ]; then
+        local inner
+        inner=$(printf '%*s' "$((width - 2))" '' | tr ' ' "$BOX_HZ")
+        printf '%s' "$BOX_TL$inner$BOX_TR"
+    else
+        local inner=" $title "
+        local right_len=$((width - 2 - ${#inner}))
+        [ "$right_len" -lt 0 ] && right_len=0
+        local right
+        right=$(printf '%*s' "$right_len" '' | tr ' ' "$BOX_HZ")
+        printf '%s' "$BOX_TL$BOX_HZ$inner$right$BOX_TR"
+    fi
+    printf '\n'
+}
+
+box_footer() {
+    local width="${1:-60}"
+    detect_box_chars
+    local inner
+    inner=$(printf '%*s' "$((width - 2))" '' | tr ' ' "$BOX_HZ")
+    printf '%s' "$BOX_BL$inner$BOX_BR"
+    printf '\n'
+}
+
+box_line() {
+    local text="${1:-}"
+    local width="${2:-60}"
+    detect_box_chars
+    local content=" $text"
+    local pad_len=$((width - 3 - ${#text}))
+    [ "$pad_len" -lt 0 ] && pad_len=0
+    local padding
+    padding=$(printf '%*s' "$pad_len" '')
+    printf '%s' "$BOX_VT$content$padding$BOX_VT"
+    printf '\n'
+}
+
+box_sep() {
+    local width="${1:-60}"
+    detect_box_chars
+    local inner
+    inner=$(printf '%*s' "$((width - 2))" '' | tr ' ' "$BOX_HZ")
+    printf '%s' "$BOX_LT$inner$BOX_RT"
+    printf '\n'
+}
+
 config_val() {
     local key="$1"
     local default="$2"
@@ -1148,19 +1243,33 @@ trap 'request_stop INT' INT
 trap 'request_stop TERM' TERM
 
 main() {
+    detect_box_chars
     prepare_runtime_files
     handle_what_need_to_do
     reset_run_state
 
-    log_sep
-    log_key "Run summary"
-    log_note "  Project id:   $PROJECT_ID"
-    log_note "  Project root: $PROJECT_DIR"
-    log_note "  Project doc:  $PROJECT_DOC_FILE"
-    log_note "  Config:       $PROJECT_CONFIG_FILE"
-    log_note "  Runtime dir:  $RUNTIME_DIR"
-    log_key "  Limits:       turns=$MAX_TURNS budget=\$$MAX_BUDGET rounds=$MAX_ROUNDS sleep=${SLEEP_SEC}s"
-    log_sep
+    local box_w=62
+    box_header "Run summary" "$box_w"
+
+    _box_kv() {
+        local _lbl="$1" _val="$2" _col="$3"
+        local _pfx="  $_lbl"
+        printf '%b' "$BOX_VT$c_note$_pfx$c_reset"
+        colorize "$_col" "$_val"
+        local _pad=$((box_w - 2 - ${#_pfx} - ${#_val}))
+        [ "$_pad" -lt 0 ] && _pad=0
+        printf '%*s%s\n' "$_pad" "" "$BOX_VT"
+        echo "[$(date '+%H:%M:%S')] $_pfx$_val" >> "$LOG_FILE"
+    }
+
+    _box_kv "Project id:   " "$PROJECT_ID" "$c_key"
+    _box_kv "Project root: " "$PROJECT_DIR" "$c_note"
+    _box_kv "Project doc:  " "$PROJECT_DOC_FILE" "$c_note"
+    _box_kv "Config:       " "$PROJECT_CONFIG_FILE" "$c_note"
+    _box_kv "Runtime dir:  " "$RUNTIME_DIR" "$c_note"
+    _box_kv "Limits:       " "turns=$MAX_TURNS budget=\$$MAX_BUDGET rounds=$MAX_ROUNDS sleep=${SLEEP_SEC}s" "$c_key"
+
+    box_footer "$box_w"
 
     if ! check_safety; then
         log_error "[FATAL] Safety check failed, aborting"

@@ -136,7 +136,17 @@ function createBox(env = {}, stream = process.stdout) {
     return C.vt + ' ' + cells.join(' ' + C.vt + ' ') + ' ' + C.vt;
   }
 
-  return { header, footer, section, kv, bullet, sep, hudLine };
+  function box_line(text, width = 80) {
+    const vis = visualWidth(text);
+    const pad = Math.max(0, width - 3 - vis);
+    return C.vt + ' ' + text + ' '.repeat(pad) + C.vt;
+  }
+
+  const box_header = header;
+  const box_footer = footer;
+  const box_sep = sep;
+
+  return { header, footer, section, kv, bullet, sep, hudLine, box_header, box_footer, box_line, box_sep };
 }
 
 module.exports = { createPalette, supportsUnicode, stripAnsi, stripBoxChars, createBox, UNICODE_CHARS, ASCII_CHARS };
